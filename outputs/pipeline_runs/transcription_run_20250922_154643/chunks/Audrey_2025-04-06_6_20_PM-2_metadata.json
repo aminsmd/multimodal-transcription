@@ -1,0 +1,28 @@
+{
+  "video_id": "Audrey_2025-04-06_6_20_PM-2",
+  "original_path": "outputs/pipeline_runs/transcription_run_20250922_154643/videos/Audrey_2025-04-06_6_20_PM-2.mp4",
+  "total_duration": 640.17,
+  "chunk_duration": 300,
+  "num_chunks": 3,
+  "processing_date": "2025-09-22T15:46:45.178322",
+  "chunks": [
+    {
+      "start_time": 0,
+      "end_time": 300,
+      "duration": 300,
+      "path": "outputs/pipeline_runs/transcription_run_20250922_154643/chunks/Audrey_2025-04-06_6_20_PM-2/chunk_0_300.mp4"
+    },
+    {
+      "start_time": 300,
+      "end_time": 600,
+      "duration": 300,
+      "path": "outputs/pipeline_runs/transcription_run_20250922_154643/chunks/Audrey_2025-04-06_6_20_PM-2/chunk_300_600.mp4"
+    },
+    {
+      "start_time": 600,
+      "end_time": 640.17,
+      "duration": 40.16999999999996,
+      "path": "outputs/pipeline_runs/transcription_run_20250922_154643/chunks/Audrey_2025-04-06_6_20_PM-2/chunk_600_640.17.mp4"
+    }
+  ]
+}

@@ -1,0 +1,359 @@
+{
+  "video_id": "Audrey_2025-04-06_6_20_PM-2",
+  "duration_seconds": 17421.0,
+  "total_entries": 48,
+  "generated": "2025-09-22T15:42:42.615968",
+  "pipeline_configuration": {
+    "video_input": "/Users/masamadi/Downloads/Audrey_2025-04-06_6_20_PM-2.mp4",
+    "chunk_duration": 300,
+    "max_workers": 4,
+    "cleanup_uploaded_files": true,
+    "force_reprocess": false,
+    "model": "gemini-2.5-pro",
+    "output_dir": "outputs",
+    "pipeline_version": "1.0"
+  },
+  "run_id": "transcription_run_20250922_154128",
+  "transcript": [
+    {
+      "type": "utterance",
+      "start_time": "00:00",
+      "end_time": "00:10",
+      "speaker": "speaker",
+      "text": "[Inaudible]"
+    },
+    {
+      "type": "utterance",
+      "start_time": "00:10",
+      "end_time": "00:24",
+      "speaker": "teacher",
+      "text": "be rice treats. Okay? We don't want to make sure we have any copywriting issues here. So, he has half a pan of crispy rice treats. He eats half of the treats. What fraction of the pan of crispy rice treats does Harlem eat?"
+    },
+    {
+      "type": "utterance",
+      "start_time": "00:24",
+      "end_time": "00:26",
+      "speaker": "teacher",
+      "text": "I'm gonna go ahead and take that away now."
+    },
+    {
+      "type": "utterance",
+      "start_time": "00:26",
+      "end_time": "00:27",
+      "speaker": "",
+      "text": "",
+      "visual": "Teacher gestures to indicate that the projected problem has been turned off."
+    },
+    {
+      "type": "utterance",
+      "start_time": "00:27",
+      "end_time": "00:33",
+      "speaker": "teacher",
+      "text": "I want you to use these sentence stems to help you to turn and talk with your partner. I noticed and what did you notice? Turn and talk."
+    },
+    {
+      "type": "utterance",
+      "start_time": "00:33",
+      "end_time": "00:33",
+      "speaker": "",
+      "text": "",
+      "visual": "Students turn to talk to their partners."
+    },
+    {
+      "type": "utterance",
+      "start_time": "00:33",
+      "end_time": "00:50",
+      "speaker": "multiple_students",
+      "text": "[Unintelligible] I noticed that Harlem ate one half of one half [Unintelligible] a half and a half. What about it? [Unintelligible]"
+    },
+    {
+      "type": "utterance",
+      "start_time": "00:50",
+      "end_time": "00:51",
+      "speaker": "teacher",
+      "text": "Alright, what did we see in the [Unintelligible]"
+    },
+    {
+      "type": "utterance",
+      "start_time": "00:51",
+      "end_time": "01:14",
+      "speaker": "multiple_students",
+      "text": "[Unintelligible] We noticed a half and a half. What about it? What were those halves representing? What half? [Unintelligible] a half of what? Okay, so half of what? [Unintelligible] Rice Krispie treats. [Unintelligible] what about the other half? [Unintelligible] and he ate one half. [Unintelligible]"
+    },
+    {
+      "type": "utterance",
+      "start_time": "01:14",
+      "end_time": "01:21",
+      "speaker": "teacher",
+      "text": "Alright, coming back together in three, two, one, and zero."
+    },
+    {
+      "type": "utterance",
+      "start_time": "01:21",
+      "end_time": "01:28",
+      "speaker": "teacher",
+      "text": "Alright, I want to affirm my buddies on talking. You did a fabulous job of coming up with what you felt was mathematically important."
+    },
+    {
+      "type": "utterance",
+      "start_time": "01:28",
+      "end_time": "01:36",
+      "speaker": "teacher",
+      "text": "Using these stems, I noticed. Let's go ahead and share out something that you noticed looking at that question just really fast."
+    },
+    {
+      "type": "utterance",
+      "start_time": "01:36",
+      "end_time": "01:37",
+      "speaker": "teacher",
+      "text": "Cash."
+    },
+    {
+      "type": "utterance",
+      "start_time": "01:37",
+      "end_time": "01:40",
+      "speaker": "student_A",
+      "text": "I noticed that um Harlem ate one half."
+    },
+    {
+      "type": "utterance",
+      "start_time": "01:40",
+      "end_time": "01:43",
+      "speaker": "teacher",
+      "text": "You noticed that he ate one half. Awesome."
+    },
+    {
+      "type": "utterance",
+      "start_time": "01:43",
+      "end_time": "01:49",
+      "speaker": "teacher",
+      "text": "Building on to Cash, Cash go ahead and call on somebody. [Unintelligible]"
+    },
+    {
+      "type": "utterance",
+      "start_time": "01:49",
+      "end_time": "01:52",
+      "speaker": "student_B",
+      "text": "I noticed that Harlem had one half."
+    },
+    {
+      "type": "utterance",
+      "start_time": "01:52",
+      "end_time": "01:57",
+      "speaker": "teacher",
+      "text": "You noticed that he had one half. Building on to Julieta."
+    },
+    {
+      "type": "utterance",
+      "start_time": "01:57",
+      "end_time": "02:01",
+      "speaker": "student_B",
+      "text": "[Unintelligible] Josefina."
+    },
+    {
+      "type": "utterance",
+      "start_time": "02:01",
+      "end_time": "02:03",
+      "speaker": "student_C",
+      "text": "I notice that he ate one half of a half."
+    },
+    {
+      "type": "utterance",
+      "start_time": "02:03",
+      "end_time": "02:09",
+      "speaker": "teacher",
+      "text": "You noticed that he ate one half of a half. Continue calling on."
+    },
+    {
+      "type": "utterance",
+      "start_time": "02:09",
+      "end_time": "02:17",
+      "speaker": "student_D",
+      "text": "I noticed that he ate one half of a half and half of a half is one fourth, which is equal to um one fourth."
+    },
+    {
+      "type": "utterance",
+      "start_time": "02:17",
+      "end_time": "02:25",
+      "speaker": "teacher",
+      "text": "Huh, so Bryson's already starting to think about calculation shortcuts here. And we actually sit right next to Anessa so you guys can talk to each other. Awesome."
+    },
+    {
+      "type": "utterance",
+      "start_time": "02:25",
+      "end_time": "02:41",
+      "speaker": "teacher",
+      "text": "Alright. So, we notice that Harlem had a half a pan of those crispy rice treats and that he ate half of that pan. I know, crispy rice treats, don't you love it?"
+    },
+    {
+      "type": "utterance",
+      "start_time": "02:41",
+      "end_time": "03:12",
+      "speaker": "teacher",
+      "text": "Alright. Now, we are going to look for a calculation shortcut. This is that time where I do not want you writing anything down. As much as you may want to problem solve with paper and pencil, as much as you may want to use your marker and write on your desk, I just want you to put your math hats on. I want you to use your mathematician brain, and I want you to think about if you were going to solve this, what operations might you use? Do you think you can come up with a mathematical shortcut to tell us how much Harlem ate? Turn and talk."
+    },
+    {
+      "type": "utterance",
+      "start_time": "03:12",
+      "end_time": "03:12",
+      "speaker": "",
+      "text": "",
+      "visual": "Students turn to talk to their partners."
+    },
+    {
+      "type": "utterance",
+      "start_time": "03:12",
+      "end_time": "04:10",
+      "speaker": "multiple_students",
+      "text": "[Unintelligible] so you have half the pan [Unintelligible] and he ate half of what he had. So, he ate one fourth of the half that he had. [Unintelligible] One half times one half. [Unintelligible] So, he had one half of the half that he started with. [Unintelligible]"
+    },
+    {
+      "type": "utterance",
+      "start_time": "04:10",
+      "end_time": "04:40",
+      "speaker": "multiple_students",
+      "text": "What do we think? Um, one half times one half is one fourth. He had a half. How much did he eat? One half. But half of the [Unintelligible] no, he ate half of what he started with. [Unintelligible]"
+    },
+    {
+      "type": "utterance",
+      "start_time": "04:40",
+      "end_time": "04:50",
+      "speaker": "teacher",
+      "text": "Okay. We're getting there. Alright friends, I love the conversation and I love that we have some misconceptions 'cause that means we get to talk about it."
+    },
+    {
+      "type": "utterance",
+      "start_time": "04:50",
+      "end_time": "05:00",
+      "speaker": "speaker",
+      "text": "[Inaudible]"
+    },
+    {
+      "type": "utterance",
+      "start_time": "05:00",
+      "end_time": "06:00",
+      "speaker": "teacher",
+      "text": "help me out. So hold on, if you didn't know you're eating some crispy rice treats. Those are what they call rice crispy treats in the math world. Um, how much is Harlem starting with? My hand. How much is he going to begin with? Nia? So he's starting with one half and I want you to make this mental image in your head, a half of a pan, right? So, Harlem, do you have the whole pan? No. How much does he have everybody? He has a half of a pan of crispy rice treats. Of that half, how much is Harlem eating? And I'm looking for a new hand that Nia maybe you can call on a friend to build on. He ate one half of it. He ate one half of that half. And I would love for us to kind of have a conversation. A lot of my friends when we were talking, they said, oh, he ate all of it. Do you agree or disagree? Show me agree that yeah, Harlem made all of it or disagree that Harlem did not eat all of it. And Bryson, I'd love if you just call on somebody for me."
+    },
+    {
+      "type": "utterance",
+      "start_time": "10:00",
+      "end_time": "10:01",
+      "speaker": "teacher",
+      "text": "half what?"
+    },
+    {
+      "type": "utterance",
+      "start_time": "10:01",
+      "end_time": "10:10",
+      "speaker": "teacher",
+      "text": "And Austin, that was a misconception that a lot of people had and I'm really glad that you pointed that out because your reflection on your learning is gonna be really helpful."
+    },
+    {
+      "type": "utterance",
+      "start_time": "10:10",
+      "end_time": "10:24",
+      "speaker": "teacher",
+      "text": "A lot of people said he ate it all. And that was because as we were looking at this and we're introduced to looking at a half of a half, it really was something new and as you look deeper into that question, that's really gonna help you to learn. Thanks for sharing, Austin."
+    },
+    {
+      "type": "utterance",
+      "start_time": "10:24",
+      "end_time": "10:28",
+      "speaker": "teacher",
+      "text": "All right. Don't worry, I'm gonna give you your pencils back now."
+    },
+    {
+      "type": "utterance",
+      "start_time": "10:28",
+      "end_time": "10:40",
+      "speaker": "teacher",
+      "text": "We are going to transition into our next part of the lesson. I'm very excited to do this with you. I'm gonna pause for just a second so we can pass out materials and then we're gonna get started looking at unit fraction by unit fraction multiplication."
+    },
+    {
+      "type": "utterance",
+      "start_time": "06:00",
+      "end_time": "14:29",
+      "speaker": "teacher",
+      "text": "did not eat all of it. And Bryson, I'd love if you just call on somebody for me. Gabriel."
+    },
+    {
+      "type": "utterance",
+      "start_time": "14:29",
+      "end_time": "40:10",
+      "speaker": "student_A",
+      "text": "Um, I I believe that he did not eat all of it because it says that he ate half of the half. Hm. So one half times one half equals one fourth because one times one equals one but two times two equals four. So he ate one fourth of the half of a pan."
+    },
+    {
+      "type": "utterance",
+      "start_time": "40:10",
+      "end_time": "10:20",
+      "speaker": "teacher",
+      "text": "And so Gabriel is working to now come up with a calculation shortcut. He's thinking that he knows that we're starting with one one half of a pan. He knows that he's looking for one half of that one half. And what does of mean exactly? Oh, it means multiply. So Gabe, you've used that vocabulary of the word of and he said that his mathematical shortcut would be to just multiply what? Can you give me some math terms to kind of help us to understand how you multiply? You multiplied what?"
+    },
+    {
+      "type": "utterance",
+      "start_time": "10:20",
+      "end_time": "32:06",
+      "speaker": "student_A",
+      "text": "I multiplied one half by one half and got the product of one fourth. So what I heard is that you multiplied those top numbers are your um numerators. So you multiply your numerators and then you multiply your denominators. And so Gabriel says that Harlem ate one fourth of the crispy rice treats."
+    },
+    {
+      "type": "utterance",
+      "start_time": "32:06",
+      "end_time": "43:14",
+      "speaker": "teacher",
+      "text": "Bryson, I I see you agreeing. Go ahead. We know that one fourth but we but we used another way. We divided, we divided one half divided by two, right?"
+    },
+    {
+      "type": "utterance",
+      "start_time": "43:14",
+      "end_time": "50:00",
+      "speaker": "teacher",
+      "text": "So you did one half and you divided it by two. And when you say divided by two, why did you choose to do that?"
+    },
+    {
+      "type": "utterance",
+      "start_time": "50:00",
+      "end_time": "53:15",
+      "speaker": "teacher",
+      "text": "Josefina, if you want to build on."
+    },
+    {
+      "type": "utterance",
+      "start_time": "53:15",
+      "end_time": "17:20",
+      "speaker": "student_B",
+      "text": "Because because one half has two fourths. So he ate half of the half. one half plus one is equal to two. So yeah. And so the word that comes to my mind when I'm thinking about what you both did is you partitioned, right? You took that half and you partitioned into another half. And I think that's a great strategy and I think it connects really well to Gabe's."
+    },
+    {
+      "type": "utterance",
+      "start_time": "17:20",
+      "end_time": "52:04",
+      "speaker": "teacher",
+      "text": "Okay. So, looking and moving forward, the best part about this is when we're going through this, you were able to come up with a calculation shortcut, okay? And now I really want to reflect on our learning and think about how could we use this calculation shortcut going forward. So, the next time, if you had a problem like this where you have a fraction times a fraction, the next time I will before I calculate because or paying attention to blank is helpful because turn and talk with your partner and use one of those sentence stems to reflect on your contemplation and calculation. Turn and talk."
+    },
+    {
+      "type": "utterance",
+      "start_time": "52:04",
+      "end_time": "38:14",
+      "speaker": "",
+      "text": "",
+      "visual": "Students engage in partner discussions. Multiple conversations are happening simultaneously, making individual speech unintelligible."
+    },
+    {
+      "type": "utterance",
+      "start_time": "38:14",
+      "end_time": "50:21",
+      "speaker": "teacher",
+      "text": "A friend who's feeling nice and brave on a Wednesday afternoon using one of our sentence stems, the next time I will or paying attention to. I would love to hear your thoughts. Austin, you had a really great one. Go ahead."
+    },
+    {
+      "type": "utterance",
+      "start_time": "50:21",
+      "end_time": "05:00",
+      "speaker": "student_C",
+      "text": "Uh, the next time I will look deeper into the question before I calculate because like what if I like thought the one half at the start of the problem was two halves and I think, oh, Harlem's eating one half of the pain. So then"
+    }
+  ]
+}

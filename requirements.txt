@@ -1,0 +1,4 @@
+# Core dependencies for standalone transcription pipeline
+google-genai==1.19.0
+python-dotenv==1.1.0
+moviepy==2.2.1
