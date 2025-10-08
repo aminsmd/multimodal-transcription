@@ -38,6 +38,7 @@ class TranscriptionConfig:
     # Video processing settings
     video_input: str
     chunk_duration: int = 300
+    chunk_size_mb: Optional[int] = None  # Size-based chunking in MB
     max_workers: int = 4
     
     # Pipeline behavior settings
@@ -53,6 +54,11 @@ class TranscriptionConfig:
     # Pipeline version for compatibility
     pipeline_version: str = "1.0"
     
+    # Database-compatible fields
+    video_id: Optional[str] = None  # Video ID for database lookups
+    file_managed: bool = False  # Whether file is managed by repository
+    original_input: Optional[str] = None  # Original input before resolution
+    
     def __post_init__(self):
         """Validate configuration after initialization."""
         self._validate()
@@ -67,6 +73,12 @@ class TranscriptionConfig:
         
         if self.chunk_duration > 3600:  # 1 hour
             raise ValueError("chunk_duration should not exceed 3600 seconds (1 hour)")
+        
+        if self.chunk_size_mb is not None:
+            if self.chunk_size_mb <= 0:
+                raise ValueError("chunk_size_mb must be positive")
+            if self.chunk_size_mb > 1000:  # 1GB
+                raise ValueError("chunk_size_mb should not exceed 1000 MB (1GB)")
         
         if self.max_workers <= 0:
             raise ValueError("max_workers must be positive")
@@ -101,7 +113,8 @@ class TranscriptionConfig:
     def get_config_hash(self) -> str:
         """Generate a hash for this configuration."""
         # Create a stable string representation for hashing
-        config_string = f"{self.video_input}_{self.chunk_duration}_{self.max_workers}_{self.model.value}_{self.pipeline_version}"
+        chunk_size_str = f"_{self.chunk_size_mb}" if self.chunk_size_mb is not None else ""
+        config_string = f"{self.video_input}_{self.chunk_duration}{chunk_size_str}_{self.max_workers}_{self.model.value}_{self.pipeline_version}"
         return hashlib.sha256(config_string.encode()).hexdigest()[:16]
     
     def is_compatible_with(self, other: 'TranscriptionConfig') -> bool:
@@ -109,6 +122,7 @@ class TranscriptionConfig:
         return (
             self.video_input == other.video_input and
             self.chunk_duration == other.chunk_duration and
+            self.chunk_size_mb == other.chunk_size_mb and
             self.max_workers == other.max_workers and
             self.model == other.model and
             self.pipeline_version == other.pipeline_version
@@ -117,11 +131,33 @@ class TranscriptionConfig:
     def get_display_name(self) -> str:
         """Get a human-readable name for this configuration."""
         video_name = Path(self.video_input).stem
-        return f"{video_name}_{self.chunk_duration}s_{self.max_workers}w_{self.model.value}"
+        chunk_info = f"{self.chunk_size_mb}mb" if self.chunk_size_mb is not None else f"{self.chunk_duration}s"
+        return f"{video_name}_{chunk_info}_{self.max_workers}w_{self.model.value}"
+    
+    @classmethod
+    def from_video_entity(cls, video_entity, **kwargs) -> 'TranscriptionConfig':
+        """
+        Create TranscriptionConfig from VideoEntity.
+        
+        Args:
+            video_entity: VideoEntity object
+            **kwargs: Additional configuration parameters
+            
+        Returns:
+            TranscriptionConfig instance
+        """
+        return cls(
+            video_input=video_entity.file_path,
+            video_id=video_entity.video_id,
+            file_managed=True,
+            original_input=video_entity.filename,
+            **kwargs
+        )
     
     def __str__(self) -> str:
         """String representation of configuration."""
-        return f"TranscriptionConfig(video_input='{self.video_input}', chunk_duration={self.chunk_duration}, max_workers={self.max_workers}, model={self.model.value})"
+        chunk_info = f"chunk_size_mb={self.chunk_size_mb}" if self.chunk_size_mb is not None else f"chunk_duration={self.chunk_duration}"
+        return f"TranscriptionConfig(video_input='{self.video_input}', {chunk_info}, max_workers={self.max_workers}, model={self.model.value})"
 
 
 @dataclass
@@ -318,6 +354,17 @@ class PipelineResults:
     cached: bool = False
     cache_info: Optional[CacheEntry] = None
     
+    # Runtime tracking fields
+    start_time: Optional[str] = None  # ISO format start time
+    end_time: Optional[str] = None  # ISO format end time
+    total_runtime_seconds: Optional[float] = None  # Total runtime in seconds
+    processing_runtime_seconds: Optional[float] = None  # Processing time (excluding setup/cleanup)
+    
+    # Database-compatible fields
+    video_entity_id: Optional[str] = None  # Reference to VideoEntity
+    repository_managed: bool = False  # Whether managed by repository
+    file_hash: Optional[str] = None  # File hash for deduplication
+    
     @classmethod
     def from_dict(cls, data: Dict) -> 'PipelineResults':
         """Create PipelineResults from dictionary."""
@@ -330,7 +377,11 @@ class PipelineResults:
             transcript_analysis=data.get('transcript_analysis', {}),
             full_transcript=FullTranscript.from_dict(data.get('full_transcript', {})),
             cached=data.get('cached', False),
-            cache_info=CacheEntry.from_dict(data.get('cache_info', {})) if data.get('cache_info') else None
+            cache_info=CacheEntry.from_dict(data.get('cache_info', {})) if data.get('cache_info') else None,
+            start_time=data.get('start_time'),
+            end_time=data.get('end_time'),
+            total_runtime_seconds=data.get('total_runtime_seconds'),
+            processing_runtime_seconds=data.get('processing_runtime_seconds')
         )
     
     def to_dict(self) -> Dict:
@@ -386,3 +437,89 @@ class UploadedFileInfo:
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
         return asdict(self)
+
+
+@dataclass
+class ValidationIssue:
+    """Individual validation issue found in transcript."""
+    issue_type: str  # 'chronological_order', 'gap', 'failed_chunk', 'overlap'
+    severity: str  # 'error', 'warning', 'info'
+    start_time: float
+    end_time: float
+    description: str
+    entry_index: Optional[int] = None
+    chunk_index: Optional[int] = None
+    entry_data: Optional[Dict] = None  # Full entry data for detailed analysis
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary."""
+        result = asdict(self)
+        # Remove None values for cleaner output
+        return {k: v for k, v in result.items() if v is not None}
+
+
+@dataclass
+class ValidationResults:
+    """Results from transcript validation."""
+    video_id: str
+    validation_date: str
+    total_entries: int
+    total_duration_seconds: float
+    issues: List[ValidationIssue]
+    chronological_order_valid: bool
+    gap_threshold_seconds: float
+    gaps_found: int
+    failed_chunks: List[int]
+    overlaps_found: int
+    validation_passed: bool
+    
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'ValidationResults':
+        """Create ValidationResults from dictionary."""
+        return cls(
+            video_id=data.get('video_id', ''),
+            validation_date=data.get('validation_date', ''),
+            total_entries=data.get('total_entries', 0),
+            total_duration_seconds=data.get('total_duration_seconds', 0.0),
+            issues=[ValidationIssue(**issue) for issue in data.get('issues', [])],
+            chronological_order_valid=data.get('chronological_order_valid', True),
+            gap_threshold_seconds=data.get('gap_threshold_seconds', 10.0),
+            gaps_found=data.get('gaps_found', 0),
+            failed_chunks=data.get('failed_chunks', []),
+            overlaps_found=data.get('overlaps_found', 0),
+            validation_passed=data.get('validation_passed', True)
+        )
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary."""
+        return {
+            'video_id': self.video_id,
+            'validation_date': self.validation_date,
+            'total_entries': self.total_entries,
+            'total_duration_seconds': self.total_duration_seconds,
+            'issues': [issue.to_dict() for issue in self.issues],
+            'chronological_order_valid': self.chronological_order_valid,
+            'gap_threshold_seconds': self.gap_threshold_seconds,
+            'gaps_found': self.gaps_found,
+            'failed_chunks': self.failed_chunks,
+            'overlaps_found': self.overlaps_found,
+            'validation_passed': self.validation_passed
+        }
+    
+    def get_summary(self) -> Dict:
+        """Get a summary of validation results."""
+        error_count = sum(1 for issue in self.issues if issue.severity == 'error')
+        warning_count = sum(1 for issue in self.issues if issue.severity == 'warning')
+        info_count = sum(1 for issue in self.issues if issue.severity == 'info')
+        
+        return {
+            'validation_passed': self.validation_passed,
+            'total_issues': len(self.issues),
+            'errors': error_count,
+            'warnings': warning_count,
+            'info': info_count,
+            'chronological_order_valid': self.chronological_order_valid,
+            'gaps_found': self.gaps_found,
+            'failed_chunks': len(self.failed_chunks),
+            'overlaps_found': self.overlaps_found
+        }

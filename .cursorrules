@@ -1,0 +1,22 @@
+# Cursor Rules for Multimodal Transcription Project
+
+## Virtual Environment Activation
+- Always activate the .venv virtual environment in the root directory before running any Python code
+- Use `source .venv/bin/activate` to activate the virtual environment
+- Ensure all Python commands are run within the activated virtual environment
+
+## Python Code Execution
+- When running Python scripts, always ensure the virtual environment is activated first
+- Use `python` command after activation, not `python3` unless specifically required
+- Install dependencies using `pip install -r requirements.txt` within the activated environment
+
+## Project Structure
+- Main source code is in the `src/` directory
+- Examples are in the `examples/` directory
+- Outputs are stored in the `outputs/` directory
+- Test outputs are in the `test_outputs/` directory
+
+## Development Guidelines
+- Always check if virtual environment is activated before running any Python code
+- Use relative paths when possible, but absolute paths are acceptable for tool calls
+- Follow the existing project structure and naming conventions

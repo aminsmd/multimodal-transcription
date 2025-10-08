@@ -95,11 +95,34 @@ def parse_timestamp(timestamp: str) -> float:
         parts = timestamp.split(':')
         if len(parts) == 2:  # MM:SS
             minutes, seconds = parts
-            return int(minutes) * 60 + float(seconds)
+            minutes_int = int(minutes)
+            seconds_float = float(seconds)
+            
+            # Validate seconds (should be 0-59.999)
+            if seconds_float >= 60:
+                print(f"Warning: Invalid seconds {seconds_float} in timestamp '{timestamp}', capping at 59.999")
+                seconds_float = 59.999
+            
+            return minutes_int * 60 + seconds_float
         elif len(parts) == 3:  # HH:MM:SS
             hours, minutes, seconds = parts
-            return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+            hours_int = int(hours)
+            minutes_int = int(minutes)
+            seconds_float = float(seconds)
+            
+            # Validate minutes (should be 0-59)
+            if minutes_int >= 60:
+                print(f"Warning: Invalid minutes {minutes_int} in timestamp '{timestamp}', capping at 59")
+                minutes_int = 59
+            
+            # Validate seconds (should be 0-59.999)
+            if seconds_float >= 60:
+                print(f"Warning: Invalid seconds {seconds_float} in timestamp '{timestamp}', capping at 59.999")
+                seconds_float = 59.999
+            
+            return hours_int * 3600 + minutes_int * 60 + seconds_float
         else:
             return float(timestamp)
-    except Exception:
+    except Exception as e:
+        print(f"Warning: Could not parse timestamp '{timestamp}': {e}, using 0.0")
         return 0.0

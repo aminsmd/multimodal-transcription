@@ -56,6 +56,8 @@ The transcript must be returned as valid JSON with no additional text before or 
     ]
 }
 
+IMPORTANT: All timestamps must be in MM:SS format (e.g., "05:30", "12:45"). Do NOT use HH:MM:SS format. Seconds must be between 00-59. If you need to represent times over 60 minutes, use MM:SS format where MM can be 60 or higher.
+
 ________________
 Requirements
       * Every entry must include start_time and end_time.

@@ -349,7 +349,96 @@ class TranscriptionPipeline:
         
         return str(dest_path)
     
-    def create_chunks(self, video_path: str, video_id: str, chunk_duration: int) -> Dict:
+    def _calculate_size_based_chunks(self, video_path: str, duration: float, target_size_mb: int) -> Tuple[List[Tuple[float, float]], float]:
+        """
+        Calculate chunk boundaries based on target file size.
+        
+        This method estimates chunk boundaries by sampling the video at different
+        time points and measuring file sizes to approximate the target chunk size.
+        """
+        print(f"Calculating size-based chunk boundaries for target size: {target_size_mb}MB")
+        
+        # Get the original video file size
+        original_size_mb = os.path.getsize(video_path) / (1024 * 1024)
+        print(f"Original video size: {original_size_mb:.1f}MB")
+        
+        # Estimate total number of chunks needed
+        estimated_chunks = max(1, int(original_size_mb / target_size_mb))
+        chunk_duration_estimate = duration / estimated_chunks
+        
+        print(f"Estimated {estimated_chunks} chunks with ~{chunk_duration_estimate:.1f}s duration each")
+        
+        # Sample a few chunks to get better size estimates
+        sample_chunks = []
+        sample_size = min(3, estimated_chunks)  # Sample up to 3 chunks
+        
+        for i in range(sample_size):
+            start_time = i * chunk_duration_estimate
+            end_time = min((i + 1) * chunk_duration_estimate, duration)
+            
+            # Create a temporary chunk to measure size
+            temp_chunk_path = self.run_dir / "chunks" / f"temp_sample_{i}.mp4"
+            try:
+                cmd = [
+                    'ffmpeg', '-i', video_path,
+                    '-ss', str(start_time),
+                    '-t', str(end_time - start_time),
+                    '-c', 'copy',
+                    '-avoid_negative_ts', 'make_zero',
+                    str(temp_chunk_path),
+                    '-y'
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0 and temp_chunk_path.exists():
+                    chunk_size_mb = os.path.getsize(temp_chunk_path) / (1024 * 1024)
+                    sample_chunks.append((start_time, end_time, chunk_size_mb))
+                    print(f"Sample chunk {i}: {start_time:.1f}s-{end_time:.1f}s = {chunk_size_mb:.1f}MB")
+                # Clean up temp file
+                if temp_chunk_path.exists():
+                    temp_chunk_path.unlink()
+            except Exception as e:
+                print(f"Error creating sample chunk {i}: {e}")
+        
+        # Calculate average size per second from samples
+        if sample_chunks:
+            total_duration = sum(end - start_time for start_time, end, _ in sample_chunks)
+            total_size = sum(size for _, _, size in sample_chunks)
+            size_per_second = total_size / total_duration if total_duration > 0 else target_size_mb / 60
+        else:
+            # Fallback: assume uniform bitrate
+            size_per_second = original_size_mb / duration
+        
+        print(f"Estimated size per second: {size_per_second:.2f}MB/s")
+        
+        # Calculate chunk boundaries
+        chunk_boundaries = []
+        current_time = 0.0
+        
+        while current_time < duration:
+            # Calculate target duration for this chunk
+            remaining_duration = duration - current_time
+            target_duration = target_size_mb / size_per_second
+            
+            # Don't exceed remaining duration
+            chunk_duration = min(target_duration, remaining_duration)
+            end_time = current_time + chunk_duration
+            
+            chunk_boundaries.append((current_time, end_time))
+            current_time = end_time
+        
+        print(f"Calculated {len(chunk_boundaries)} chunk boundaries")
+        
+        # Calculate average chunk duration from the actual boundaries
+        if chunk_boundaries:
+            total_duration = sum(end - start for start, end in chunk_boundaries)
+            average_chunk_duration = total_duration / len(chunk_boundaries)
+        else:
+            average_chunk_duration = 0.0
+        
+        print(f"Average chunk duration: {average_chunk_duration:.1f}s")
+        return chunk_boundaries, average_chunk_duration
+    
+    def create_chunks(self, video_path: str, video_id: str, chunk_duration: int, chunk_size_mb: Optional[int] = None) -> Dict:
         """Create video chunks."""
         chunks_dir = self.run_dir / "chunks" / video_id
         chunks_dir.mkdir(exist_ok=True)
@@ -378,9 +467,23 @@ class TranscriptionPipeline:
             duration = video.duration
             chunks = []
             
-            for i in range(0, int(duration), chunk_duration):
-                start_time = i
-                end_time = min(i + chunk_duration, duration)
+            if chunk_size_mb is not None:
+                # Size-based chunking
+                print(f"Using size-based chunking with target size: {chunk_size_mb}MB")
+                chunk_boundaries, calculated_chunk_duration = self._calculate_size_based_chunks(video_path, duration, chunk_size_mb)
+                # Use the calculated average chunk duration instead of the config value
+                effective_chunk_duration = int(calculated_chunk_duration)
+            else:
+                # Time-based chunking (original logic)
+                print(f"Using time-based chunking with duration: {chunk_duration}s")
+                chunk_boundaries = []
+                for i in range(0, int(duration), chunk_duration):
+                    start_time = i
+                    end_time = min(i + chunk_duration, duration)
+                    chunk_boundaries.append((start_time, end_time))
+                effective_chunk_duration = chunk_duration
+            
+            for start_time, end_time in chunk_boundaries:
                 
                 chunk_path = chunks_dir / f"chunk_{start_time}_{end_time}.mp4"
                 
@@ -424,7 +527,9 @@ class TranscriptionPipeline:
             "video_id": video_id,
             "original_path": video_path,
             "total_duration": duration,
-            "chunk_duration": chunk_duration,
+            "chunk_duration": effective_chunk_duration,
+            "chunk_size_mb": chunk_size_mb,
+            "chunking_method": "size_based" if chunk_size_mb is not None else "time_based",
             "num_chunks": len(chunks),
             "processing_date": datetime.datetime.now().isoformat(),
             "chunks": chunks
@@ -669,6 +774,52 @@ Requirements
         
         return entry
     
+    def _save_raw_response(self, response_text: str, chunk_path: str, start_time: int, end_time: int):
+        """
+        Save raw API response to file for debugging.
+        
+        Args:
+            response_text: Raw response text from API
+            chunk_path: Path to the video chunk
+            start_time: Start time of the chunk
+            end_time: End time of the chunk
+        """
+        try:
+            import datetime
+            from pathlib import Path
+            
+            # Create raw responses directory
+            raw_responses_dir = self.run_dir / "raw_responses"
+            raw_responses_dir.mkdir(exist_ok=True)
+            
+            # Generate filename
+            chunk_name = Path(chunk_path).stem
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # Include milliseconds
+            filename = f"{chunk_name}_{start_time}_{end_time}_raw_response_{timestamp}.json"
+            
+            # Save the raw response
+            raw_response_path = raw_responses_dir / filename
+            
+            # Create a structured response object
+            raw_response_data = {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "chunk_path": str(chunk_path),
+                "chunk_name": chunk_name,
+                "start_time": start_time,
+                "end_time": end_time,
+                "raw_response": response_text,
+                "response_length": len(response_text),
+                "model": "gemini-2.5-pro"
+            }
+            
+            with open(raw_response_path, 'w', encoding='utf-8') as f:
+                json.dump(raw_response_data, f, indent=2, ensure_ascii=False)
+            
+            print(f"Raw API response saved to: {raw_response_path}")
+            
+        except Exception as e:
+            print(f"Warning: Failed to save raw response: {str(e)}")
+
     def parse_timestamp(self, timestamp: str) -> float:
         """Parse timestamp string to seconds."""
         try:
@@ -686,6 +837,12 @@ Requirements
                             seconds = float(seconds_part) / 1000.0
                         else:
                             seconds = float(seconds_part)
+                    
+                    # Validate seconds (should be 0-59.999)
+                    if seconds >= 60:
+                        print(f"Warning: Invalid seconds {seconds} in timestamp '{timestamp}', capping at 59.999")
+                        seconds = 59.999
+                    
                     return minutes * 60 + seconds
                 elif len(parts) == 3:
                     # Handle transcript timestamps like "00:01:23.000" (HH:MM:SS.mmm format)
@@ -701,10 +858,21 @@ Requirements
                             seconds = float(seconds_part) / 1000.0
                         else:
                             seconds = float(seconds_part)
+                    
+                    # Validate minutes (should be 0-59)
+                    if minutes >= 60:
+                        print(f"Warning: Invalid minutes {minutes} in timestamp '{timestamp}', capping at 59")
+                        minutes = 59
+                    
+                    # Validate seconds (should be 0-59.999)
+                    if seconds >= 60:
+                        print(f"Warning: Invalid seconds {seconds} in timestamp '{timestamp}', capping at 59.999")
+                        seconds = 59.999
+                    
                     return hours * 3600 + minutes * 60 + seconds
             return float(timestamp)
-        except (ValueError, TypeError):
-            print(f"Warning: Could not parse timestamp '{timestamp}', using 0.0")
+        except (ValueError, TypeError) as e:
+            print(f"Warning: Could not parse timestamp '{timestamp}': {e}, using 0.0")
             return 0.0
     
     def analyze_chunk_transcript(self, chunk_path: str, start_time: int, end_time: int, video_duration: float = 0) -> Dict:
@@ -741,6 +909,9 @@ Requirements
                     prompt
                 ]
             )
+        
+        # Save raw response for debugging
+        self._save_raw_response(response.text, chunk_path, start_time, end_time)
         
         # Parse response
         try:
@@ -866,8 +1037,10 @@ Requirements
                 # Create full transcript entry
                 full_entry = {
                     "time": absolute_start_timestamp,  # Main time field for backward compatibility
+                    "type": entry.get('type', 'utterance'),  # Preserve entry type
                     "speaker": entry.get('speaker', ''),
                     "spoken_text": entry.get('spoken_text', ''),
+                    "event_description": entry.get('event_description', ''),  # Preserve event description
                     "visual_description": entry.get('visual_description', ''),
                     "absolute_time": absolute_start_time,  # Used for sorting
                     "absolute_start_timestamp": absolute_start_timestamp,  # Used in text output
@@ -1001,19 +1174,49 @@ Requirements
             else:
                 clean_end_timestamp = end_timestamp
             
-            # Create clean entry with only essential fields
+            # Get entry type
+            entry_type = entry.get('type', 'utterance')
+            
+            # Create clean entry with type-specific fields
             clean_entry = {
-                "type": entry.get('type', 'utterance'),
+                "type": entry_type,
                 "start_time": clean_timestamp,
-                "end_time": clean_end_timestamp,
-                "speaker": entry.get('speaker', ''),
-                "text": entry.get('spoken_text', ''),
-                "visual": entry.get('visual_description', '') if entry.get('visual_description', '').strip() else None
+                "end_time": clean_end_timestamp
             }
             
-            # Remove visual field if it's empty or None
-            if not clean_entry["visual"]:
-                del clean_entry["visual"]
+            # Handle different entry types
+            if entry_type == "utterance":
+                # For utterances, include speaker and text
+                clean_entry["speaker"] = entry.get('speaker', '')
+                clean_entry["text"] = entry.get('spoken_text', '')
+                
+                # Add visual description if present
+                visual_desc = entry.get('visual_description', '')
+                if visual_desc and visual_desc.strip():
+                    clean_entry["visual"] = visual_desc
+                    
+            elif entry_type == "event":
+                # For events, include event description as text
+                clean_entry["text"] = entry.get('event_description', '')
+                
+                # Events typically don't have speakers, but include if present
+                speaker = entry.get('speaker', '')
+                if speaker and speaker.strip():
+                    clean_entry["speaker"] = speaker
+                    
+                # Add visual description if present (events might have both)
+                visual_desc = entry.get('visual_description', '')
+                if visual_desc and visual_desc.strip():
+                    clean_entry["visual"] = visual_desc
+            
+            # Remove empty fields to keep the output clean
+            if clean_entry.get("speaker") == "":
+                del clean_entry["speaker"]
+            if clean_entry.get("text") == "":
+                del clean_entry["text"]
+            if clean_entry.get("visual") == "" or clean_entry.get("visual") is None:
+                if "visual" in clean_entry:
+                    del clean_entry["visual"]
             
             clean_entries.append(clean_entry)
         
@@ -1090,11 +1293,14 @@ Requirements
                     full_transcript_data = json.load(f)
                 
                 # Create results structure
+                # For cached results, we need to get the chunk duration from the cached transcript metadata
+                cached_chunk_duration = full_transcript_data.get('metadata', {}).get('pipeline_configuration', {}).get('chunk_duration', config.chunk_duration)
+                
                 pipeline_results = PipelineResults(
                     video_id=video_id,
                     original_input=config.video_input,
                     processing_date=datetime.datetime.now().isoformat(),
-                    chunk_duration=config.chunk_duration,
+                    chunk_duration=cached_chunk_duration,
                     max_workers=config.max_workers,
                     transcript_analysis={},  # Empty for cached results
                     full_transcript=FullTranscript.from_dict(full_transcript_data),
@@ -1111,7 +1317,7 @@ Requirements
         video_path = self.copy_video(config.video_input, video_id)
         
         # Step 2: Create chunks
-        chunks_metadata = self.create_chunks(video_path, video_id, config.chunk_duration)
+        chunks_metadata = self.create_chunks(video_path, video_id, config.chunk_duration, config.chunk_size_mb)
         
         # Step 3: Generate transcripts for chunks using parallel processing
         print("\n=== Starting Parallel Transcript Generation ===")
@@ -1121,11 +1327,14 @@ Requirements
         full_transcript = self.create_full_transcript(transcript_analysis, video_id)
         
         # Create final results
+        # Use the effective chunk duration from the metadata (calculated for size-based chunking)
+        effective_chunk_duration = chunks_metadata.get('chunk_duration', config.chunk_duration)
+        
         pipeline_results = PipelineResults(
             video_id=video_id,
             original_input=config.video_input,
             processing_date=datetime.datetime.now().isoformat(),
-            chunk_duration=config.chunk_duration,
+            chunk_duration=effective_chunk_duration,
             max_workers=config.max_workers,
             transcript_analysis=transcript_analysis,
             full_transcript=FullTranscript.from_dict(full_transcript),
@@ -1164,7 +1373,7 @@ Requirements
                 config.video_input, 
                 "transcribed",
                 transcript_path=str(full_transcript_path),
-                processing_date=results.processing_date,
+                processing_date=pipeline_results.processing_date,
                 run_id=self.run_id
             )
             print(f"Updated file management status for: {video_id}")
@@ -1178,6 +1387,8 @@ def main():
                        help='Video file path')
     parser.add_argument('--chunk-size', type=int, default=300,
                        help='Duration of each chunk in seconds (default: 300)')
+    parser.add_argument('--chunk-size-mb', type=int, default=None,
+                       help='Target size of each chunk in MB (alternative to --chunk-size)')
     parser.add_argument('--max-workers', type=int, default=4,
                        help='Maximum number of parallel workers for transcription (default: 4)')
     parser.add_argument('--output-dir', type=str, default='outputs',
@@ -1198,6 +1409,7 @@ def main():
         config = TranscriptionConfig(
             video_input=args.input,
             chunk_duration=args.chunk_size,
+            chunk_size_mb=args.chunk_size_mb,
             max_workers=args.max_workers,
             cleanup_uploaded_files=not args.no_cleanup,
             force_reprocess=args.force_reprocess,
