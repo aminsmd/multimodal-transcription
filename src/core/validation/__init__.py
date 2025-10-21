@@ -10,3 +10,4 @@ from .transcript_validator import TranscriptValidator
 
 __all__ = ['TranscriptValidator']
 
+

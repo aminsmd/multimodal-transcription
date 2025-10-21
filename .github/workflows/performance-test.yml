@@ -1,0 +1,124 @@
+name: Performance Testing
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      test_video_url:
+        description: 'URL to test video file'
+        required: false
+        type: string
+
+jobs:
+  performance-test:
+    name: Performance Test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+        
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest-benchmark memory-profiler psutil
+        
+    - name: Download test video
+      if: github.event.inputs.test_video_url != ''
+      run: |
+        mkdir -p test_data/videos
+        wget -O test_data/videos/test_video.mp4 "${{ github.event.inputs.test_video_url }}"
+        
+    - name: Create test video (if no URL provided)
+      if: github.event.inputs.test_video_url == ''
+      run: |
+        mkdir -p test_data/videos
+        # Create a short test video using FFmpeg
+        ffmpeg -f lavfi -i testsrc=duration=30:size=640x480:rate=30 -c:v libx264 -preset ultrafast test_data/videos/test_video.mp4
+        
+    - name: Run performance tests
+      env:
+        GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      run: |
+        # Run performance benchmarks
+        python -m pytest tests/ -v --benchmark-only --benchmark-save=performance_results
+        
+    - name: Run memory profiling
+      env:
+        GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      run: |
+        # Run memory profiling tests
+        python -c "
+        import sys
+        sys.path.insert(0, 'src')
+        from transcription_pipeline import TranscriptionPipeline
+        import memory_profiler
+        
+        @memory_profiler.profile
+        def test_memory_usage():
+            pipeline = TranscriptionPipeline('test_outputs')
+            # Add memory profiling test here
+            pass
+            
+        test_memory_usage()
+        " > memory_profile.txt
+        
+    - name: Upload performance results
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-results
+        path: |
+          .benchmarks/
+          memory_profile.txt
+          test_outputs/
+          
+    - name: Comment PR with performance results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          
+          // Read performance results and create comment
+          let comment = '## Performance Test Results\n\n';
+          
+          try {
+            const benchmarkFiles = fs.readdirSync('.benchmarks');
+            if (benchmarkFiles.length > 0) {
+              comment += '### Benchmark Results\n';
+              comment += 'Performance benchmarks completed successfully.\n\n';
+            }
+          } catch (e) {
+            comment += 'No benchmark results found.\n\n';
+          }
+          
+          comment += '### Memory Usage\n';
+          try {
+            const memoryProfile = fs.readFileSync('memory_profile.txt', 'utf8');
+            comment += '```\n' + memoryProfile + '\n```\n';
+          } catch (e) {
+            comment += 'Memory profiling data not available.\n';
+          }
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });

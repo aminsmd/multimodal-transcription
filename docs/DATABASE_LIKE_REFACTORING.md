@@ -182,10 +182,10 @@ The pipeline now supports database-like operations:
 
 ```bash
 # Process video by ID (database-like)
-python src/transcription_pipeline_new.py --input "video_id" --data-dir "data"
+python src/transcription_pipeline.py --input "video_id" --data-dir "data"
 
 # Disable repository if needed
-python src/transcription_pipeline_new.py --input "video_id" --no-video-repository
+python src/transcription_pipeline.py --input "video_id" --no-video-repository
 ```
 
 ## Files Modified
@@ -199,7 +199,7 @@ python src/transcription_pipeline_new.py --input "video_id" --no-video-repositor
 2. **Modified Files**:
    - `src/models.py`: Added database-compatible fields
    - `src/core/pipeline.py`: Integrated VideoRepository
-   - `src/transcription_pipeline_new.py`: Added repository support
+   - `src/transcription_pipeline.py`: Added repository support
    - `src/storage/__init__.py`: Added VideoRepository exports
 
 ## Conclusion

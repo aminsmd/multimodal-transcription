@@ -404,7 +404,7 @@ class TranscriptValidator:
     
     def _check_failed_chunks(self, entries: List[Dict]) -> List[ValidationIssue]:
         """
-        Check for failed chunks (empty or very short entries).
+        Check for failed video chunks (processing failures, API errors, etc.).
         
         Args:
             entries: List of parsed transcript entries
@@ -414,58 +414,65 @@ class TranscriptValidator:
         """
         issues = []
         
+        # This method now focuses on detecting actual video chunk processing failures
+        # rather than individual entry quality issues
+        
+        # Check for entries that might indicate chunk processing failures
         for entry_data in entries:
             entry = entry_data['entry']
             
-            # Check for empty text
-            if not entry.text or entry.text.strip() == '':
+            # Check for entries that might indicate chunk processing failures
+            if self._indicates_chunk_failure(entry):
                 issues.append(ValidationIssue(
                     issue_type='failed_chunk',
                     severity='error',
                     start_time=entry_data['start_seconds'],
                     end_time=entry_data['end_seconds'],
-                    description=f"Empty transcript entry at {entry.start_time}",
+                    description=f"Possible chunk processing failure detected: '{entry.text.strip()}'",
                     entry_index=entry_data['index'],
                     entry_data={
                         'entry': entry.to_dict(),
-                        'issue': 'empty_text'
-                    }
-                ))
-            
-            # Check for very short entries (less than 1 second and no meaningful content)
-            elif entry_data['duration'] < 1.0 and len(entry.text.strip()) < 10:
-                issues.append(ValidationIssue(
-                    issue_type='failed_chunk',
-                    severity='warning',
-                    start_time=entry_data['start_seconds'],
-                    end_time=entry_data['end_seconds'],
-                    description=f"Very short entry with minimal content: '{entry.text.strip()}'",
-                    entry_index=entry_data['index'],
-                    entry_data={
-                        'entry': entry.to_dict(),
-                        'issue': 'short_content',
-                        'duration': entry_data['duration'],
-                        'text_length': len(entry.text.strip())
-                    }
-                ))
-            
-            # Check for entries with only punctuation or filler words
-            elif self._is_filler_content(entry.text):
-                issues.append(ValidationIssue(
-                    issue_type='failed_chunk',
-                    severity='info',
-                    start_time=entry_data['start_seconds'],
-                    end_time=entry_data['end_seconds'],
-                    description=f"Entry contains only filler content: '{entry.text.strip()}'",
-                    entry_index=entry_data['index'],
-                    entry_data={
-                        'entry': entry.to_dict(),
-                        'issue': 'filler_content',
+                        'issue': 'chunk_processing_failure',
                         'text': entry.text.strip()
                     }
                 ))
         
         return issues
+    
+    def _indicates_chunk_failure(self, entry) -> bool:
+        """
+        Check if an entry indicates a chunk processing failure.
+        
+        Args:
+            entry: Transcript entry to check
+            
+        Returns:
+            True if entry suggests chunk processing failure
+        """
+        if not entry.text or not entry.text.strip():
+            return False
+        
+        text_lower = entry.text.lower().strip()
+        
+        # Check for common error indicators
+        error_indicators = [
+            'error processing',
+            'failed to process',
+            'api error',
+            'network error',
+            'timeout',
+            'service unavailable',
+            'processing failed',
+            'chunk failed',
+            'transcription error',
+            'analysis failed'
+        ]
+        
+        for indicator in error_indicators:
+            if indicator in text_lower:
+                return True
+        
+        return False
     
     def _is_filler_content(self, text: str) -> bool:
         """
@@ -626,3 +633,146 @@ class TranscriptValidator:
             print(f"Detailed JSON report saved to: {output_path}")
         
         return detailed_report
+    
+    def validate_pipeline_results(self, pipeline_results: Dict, gap_threshold_seconds: float = 10.0) -> ValidationResults:
+        """
+        Validate pipeline results including failed video chunks.
+        
+        Args:
+            pipeline_results: Pipeline results dictionary
+            gap_threshold_seconds: Gap threshold for validation
+            
+        Returns:
+            ValidationResults: Comprehensive validation results including failed chunks
+        """
+        # Extract transcript analysis results
+        transcript_analysis = pipeline_results.get('transcript_analysis', {})
+        chunks = transcript_analysis.get('chunks', [])
+        
+        # Check for failed chunks in the analysis results
+        failed_chunk_issues = self._check_pipeline_failed_chunks(chunks)
+        
+        # Get the clean transcript for standard validation
+        full_transcript = pipeline_results.get('full_transcript', {})
+        if full_transcript:
+            # Convert to CleanTranscript object if it's a dict
+            if isinstance(full_transcript, dict):
+                clean_transcript = CleanTranscript.from_dict(full_transcript)
+            else:
+                clean_transcript = full_transcript
+            
+            # Run standard validation
+            standard_results = self.validate_transcript_object(clean_transcript)
+            
+            # Add failed chunk issues from pipeline analysis
+            all_issues = standard_results.issues + failed_chunk_issues
+            
+            # Update results with failed chunk information
+            failed_chunk_indices = [issue.chunk_index for issue in failed_chunk_issues if issue.chunk_index is not None]
+            
+            return ValidationResults(
+                video_id=standard_results.video_id,
+                validation_date=standard_results.validation_date,
+                total_entries=standard_results.total_entries,
+                total_duration_seconds=standard_results.total_duration_seconds,
+                issues=all_issues,
+                chronological_order_valid=standard_results.chronological_order_valid,
+                gap_threshold_seconds=gap_threshold_seconds,
+                gaps_found=standard_results.gaps_found,
+                failed_chunks=failed_chunk_indices,
+                overlaps_found=standard_results.overlaps_found,
+                validation_passed=standard_results.validation_passed and len(failed_chunk_issues) == 0
+            )
+        else:
+            # If no transcript available, create minimal results
+            return ValidationResults(
+                video_id=pipeline_results.get('video_id', 'unknown'),
+                validation_date=datetime.now().isoformat(),
+                total_entries=0,
+                total_duration_seconds=0.0,
+                issues=failed_chunk_issues,
+                chronological_order_valid=True,
+                gap_threshold_seconds=gap_threshold_seconds,
+                gaps_found=0,
+                failed_chunks=[issue.chunk_index for issue in failed_chunk_issues if issue.chunk_index is not None],
+                overlaps_found=0,
+                validation_passed=len(failed_chunk_issues) == 0
+            )
+    
+    def _check_pipeline_failed_chunks(self, chunks: List[Dict]) -> List[ValidationIssue]:
+        """
+        Check for failed video chunks in pipeline results.
+        
+        Args:
+            chunks: List of chunk processing results
+            
+        Returns:
+            List of ValidationIssue objects for failed chunks
+        """
+        issues = []
+        
+        for i, chunk_data in enumerate(chunks):
+            chunk_info = chunk_data.get('chunk_info', {})
+            result = chunk_data.get('transcript', {})
+            success = chunk_data.get('success', True)
+            
+            # Check if chunk processing failed
+            if not success:
+                start_time = chunk_info.get('start_time', 0)
+                end_time = chunk_info.get('end_time', start_time + 1)
+                error_msg = result.get('error', 'Unknown error')
+                
+                issues.append(ValidationIssue(
+                    issue_type='failed_chunk',
+                    severity='error',
+                    start_time=float(start_time),
+                    end_time=float(end_time),
+                    description=f"Video chunk processing failed: {error_msg}",
+                    chunk_index=i,
+                    entry_data={
+                        'chunk_info': chunk_info,
+                        'error': error_msg,
+                        'chunk_index': i
+                    }
+                ))
+            
+            # Check for empty or error results
+            elif result.get('error'):
+                start_time = chunk_info.get('start_time', 0)
+                end_time = chunk_info.get('end_time', start_time + 1)
+                error_msg = result.get('error', 'Unknown error')
+                
+                issues.append(ValidationIssue(
+                    issue_type='failed_chunk',
+                    severity='error',
+                    start_time=float(start_time),
+                    end_time=float(end_time),
+                    description=f"Chunk analysis error: {error_msg}",
+                    chunk_index=i,
+                    entry_data={
+                        'chunk_info': chunk_info,
+                        'error': error_msg,
+                        'chunk_index': i
+                    }
+                ))
+            
+            # Check for chunks with no transcript data
+            elif not result or len(result) == 0:
+                start_time = chunk_info.get('start_time', 0)
+                end_time = chunk_info.get('end_time', start_time + 1)
+                
+                issues.append(ValidationIssue(
+                    issue_type='failed_chunk',
+                    severity='warning',
+                    start_time=float(start_time),
+                    end_time=float(end_time),
+                    description=f"Chunk produced no transcript data",
+                    chunk_index=i,
+                    entry_data={
+                        'chunk_info': chunk_info,
+                        'chunk_index': i,
+                        'transcript_count': len(result) if result else 0
+                    }
+                ))
+        
+        return issues

@@ -54,19 +54,16 @@ class TranscriptFormatter:
         
         # Transcript entries
         for i, entry in enumerate(full_transcript['transcript'], 1):
-            # Get start and end timestamps
-            start_timestamp = entry.get('absolute_start_timestamp', entry.get('time', '00:00:00.000'))
-            end_timestamp = entry.get('absolute_end_timestamp', entry.get('time', '00:00:00.000'))
+            # Get start and end timestamps - use exact strings from JSON without parsing
+            start_timestamp = entry.get('start_time', entry.get('absolute_start_timestamp', entry.get('time', '00:00')))
+            end_timestamp = entry.get('end_time', entry.get('absolute_end_timestamp', entry.get('time', '00:00')))
             
-            # Extract just the MM:SS part for display from "HH:MM:SS.fff" format
-            start_display = start_timestamp[3:8] if len(start_timestamp) > 8 else start_timestamp  # Get MM:SS from "HH:MM:SS.fff"
-            end_display = end_timestamp[3:8] if len(end_timestamp) > 8 else end_timestamp  # Get MM:SS from "HH:MM:SS.fff"
-            
+            # Use the exact timestamp strings as they appear in the JSON
             # Format time range
-            if start_display == end_display:
-                time_display = f"[{start_display}]"
+            if start_timestamp == end_timestamp:
+                time_display = f"[{start_timestamp}]"
             else:
-                time_display = f"[{start_display} - {end_display}]"
+                time_display = f"[{start_timestamp} - {end_timestamp}]"
             
             speaker = entry.get('speaker', '')
             spoken_text = entry.get('spoken_text', '')

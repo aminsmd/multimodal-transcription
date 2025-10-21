@@ -11,15 +11,81 @@ A comprehensive video transcription system that uses Google's Gemini 2.5 Pro to 
 - **Smart Caching**: Avoids reprocessing identical videos with same configuration
 - **Google API Integration**: Automatic file upload and cleanup
 - **Robust Error Handling**: Graceful handling of processing errors and timeouts
+- **Docker Support**: Easy deployment with helper script and no build context issues
+- **Modular Architecture**: Clean separation of concerns with validation and storage components
 
 ## 📋 Requirements
 
-- Python 3.8+
+### For Docker Usage (Recommended)
+- Docker installed
+- Google API Key for Gemini
+- Video files to process
+
+### For Local Development
+- Python 3.8+ 
 - Google API Key for Gemini
 - FFmpeg (for video processing)
 - Virtual environment (recommended)
 
 ## 🚀 Quick Start
+
+### Option 1: Docker (Recommended)
+
+The easiest way to run the pipeline is using Docker:
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd multimodal-transcription
+
+# Set your Google API key
+export GOOGLE_API_KEY="your_api_key_here"
+
+# Make the helper script executable
+chmod +x docker-run.sh
+
+# Process a video (automatically builds image if needed)
+./docker-run.sh data/videos/your_video.mp4
+
+# Process with custom settings
+./docker-run.sh data/videos/your_video.mp4 --chunk-size 600 --max-workers 4
+
+# Force reprocessing
+./docker-run.sh data/videos/your_video.mp4 --force-reprocess
+```
+
+For detailed Docker usage, see [DOCKER.md](DOCKER.md).
+
+#### Docker Helper Script Features
+
+The `docker-run.sh` script provides a convenient way to run the pipeline:
+
+```bash
+# Basic usage
+./docker-run.sh data/videos/lecture.mp4
+
+# Custom settings
+./docker-run.sh data/videos/lecture.mp4 --chunk-size 600 --max-workers 4
+
+# Force reprocessing
+./docker-run.sh data/videos/lecture.mp4 --force-reprocess
+
+# Interactive mode
+./docker-run.sh --interactive
+
+# Show help
+./docker-run.sh --help
+```
+
+**Features:**
+- ✅ Automatically builds Docker image if needed
+- ✅ Handles video file copying to correct directory
+- ✅ Supports all pipeline options (chunk-size, max-workers, force-reprocess)
+- ✅ Clear error messages and validation
+- ✅ Interactive mode for debugging
+- ✅ No build context issues (uses direct Docker commands)
+
+### Option 2: Local Development
 
 ### 1. Setup Environment
 
@@ -67,7 +133,15 @@ python src/transcription_pipeline.py \
 multimodal-transcription/
 ├── src/                          # Source code
 │   ├── core/                     # Core components
-│   │   └── file_manager.py      # File management system
+│   │   ├── pipeline.py          # Main pipeline logic
+│   │   ├── file_manager.py      # File management system
+│   │   ├── transcription/        # Transcription components
+│   │   ├── validation/          # Transcript validation
+│   │   └── storage/             # Storage management
+│   ├── ai/                       # AI model integration
+│   │   ├── gemini_client.py     # Google Gemini client
+│   │   ├── model_handler.py     # Model management
+│   │   └── prompt_manager.py    # Prompt handling
 │   ├── data/                     # Data management
 │   │   ├── data_setup.py        # Data directory setup
 │   │   └── setup_data.py        # Quick setup script
@@ -81,11 +155,23 @@ multimodal-transcription/
 │   ├── basic_usage.py           # Basic usage example
 │   ├── advanced_usage.py        # Advanced features
 │   ├── enhanced_usage.py        # File management example
-│   └── data_management_example.py # Data management example
+│   ├── data_management_example.py # Data management example
+│   └── validate_transcript.py   # Transcript validation example
 ├── outputs/                      # Generated outputs
 │   └── pipeline_runs/           # Timestamped run directories
 ├── data/                         # Data directory (auto-created)
+│   ├── videos/                  # Input videos
+│   ├── transcripts/             # Generated transcripts
+│   └── cache/                    # Processing cache
+├── tests/                        # Test files
+├── docs/                         # Documentation
+├── Dockerfile                    # Docker image definition
+├── docker-compose.yml           # Docker Compose configuration
+├── docker-run.sh                # Docker helper script
+├── docker-entrypoint.sh         # Docker entrypoint
+├── .dockerignore                # Docker ignore file
 ├── requirements.txt              # Python dependencies
+├── DOCKER.md                     # Docker documentation
 └── README.md                     # This file
 ```
 
@@ -531,6 +617,10 @@ For issues and questions:
 - **v1.1**: Added file management system
 - **v1.2**: Enhanced parallel processing
 - **v1.3**: Improved timestamp handling and caching
+- **v1.4**: Added Docker support with helper script
+- **v1.5**: Modular architecture refactoring
+- **v1.6**: Enhanced transcript validation and error handling
+- **v1.7**: Fixed validation bug that incorrectly reported failed chunks
 
 ---
 

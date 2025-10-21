@@ -84,6 +84,7 @@ class TranscriptionPipeline:
         
         # Initialize transcript validator if enabled
         self.transcript_validator = None
+        self.gap_threshold_seconds = gap_threshold_seconds
         if enable_validation:
             self.transcript_validator = TranscriptValidator(gap_threshold_seconds=gap_threshold_seconds)
             print(f"Transcript validation enabled with gap threshold: {gap_threshold_seconds}s")
@@ -301,6 +302,21 @@ class TranscriptionPipeline:
             clean_transcript_obj = CleanTranscript.from_dict(clean_transcript_dict)
             validation_results = self.transcript_validator.validate_transcript_object(clean_transcript_obj)
             
+            # Also validate pipeline results for failed chunks
+            pipeline_results_dict = {
+                'video_id': video_id,
+                'transcript_analysis': transcript_analysis,
+                'full_transcript': clean_transcript_dict
+            }
+            pipeline_validation_results = self.transcript_validator.validate_pipeline_results(pipeline_results_dict, self.gap_threshold_seconds)
+            
+            # Merge failed chunk issues from pipeline validation
+            if pipeline_validation_results.failed_chunks:
+                print(f"  - Failed video chunks detected: {len(pipeline_validation_results.failed_chunks)}")
+                validation_results.issues.extend([issue for issue in pipeline_validation_results.issues if issue.issue_type == 'failed_chunk'])
+                validation_results.failed_chunks = pipeline_validation_results.failed_chunks
+                validation_results.validation_passed = validation_results.validation_passed and len(pipeline_validation_results.failed_chunks) == 0
+            
             # Generate validation report
             validation_report_path = self.run_dir / 'logs' / f'{video_id}_validation_report.txt'
             self.transcript_validator.generate_validation_report(validation_results, validation_report_path)
@@ -317,6 +333,13 @@ class TranscriptionPipeline:
             print(f"  - Errors: {summary['errors']}, Warnings: {summary['warnings']}, Info: {summary['info']}")
             print(f"  - Gaps: {summary['gaps_found']}, Failed Chunks: {summary['failed_chunks']}, Overlaps: {summary['overlaps_found']}")
             print(f"  - Chronological Order: {'✓' if summary['chronological_order_valid'] else '✗'}")
+            
+            # Show failed chunk details if any
+            if validation_results.failed_chunks:
+                print(f"  - Failed Video Chunks: {validation_results.failed_chunks}")
+                for issue in validation_results.issues:
+                    if issue.issue_type == 'failed_chunk' and issue.chunk_index is not None:
+                        print(f"    - Chunk {issue.chunk_index}: {issue.description}")
             
             if not summary['validation_passed']:
                 print(f"  ⚠️  Validation failed! Check reports:")

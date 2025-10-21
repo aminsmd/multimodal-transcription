@@ -37,7 +37,7 @@ src/
 ├── models.py                      # Data models (unchanged)
 ├── utils/                         # Utilities (unchanged)
 ├── transcription_pipeline.py      # Original pipeline (legacy)
-└── transcription_pipeline_new.py   # New modular entry point
+└── transcription_pipeline.py   # New modular entry point
 ```
 
 ## Key Improvements
@@ -119,7 +119,7 @@ pipeline.cleanup()
 #### **Command Line Usage**
 ```bash
 # Use the new modular pipeline
-python src/transcription_pipeline_new.py --input video.mp4 --chunk-size 300
+python src/transcription_pipeline.py --input video.mp4 --chunk-size 300
 
 # Original pipeline still works
 python src/transcription_pipeline.py --input video.mp4 --chunk-size 300
@@ -166,7 +166,7 @@ python src/transcription_pipeline.py --input video.mp4 --chunk-size 300
 
 #### **For Users**
 - The new pipeline is backward compatible
-- Use `transcription_pipeline_new.py` for the modular version
+- Use `transcription_pipeline.py` for the modular version
 - Original `transcription_pipeline.py` still works
 
 #### **For Developers**

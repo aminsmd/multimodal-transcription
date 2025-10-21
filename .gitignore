@@ -256,3 +256,32 @@ secrets.json
 .Trashes
 ehthumbs.db
 Thumbs.db
+M2K videos for test/
+*.mp4
+
+# Additional Python patterns
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dylib
+
+# Jupyter notebook checkpoints (if you use Jupyter)
+.ipynb_checkpoints/
+
+# IDE and editor files
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker
+.dockerignore
+
+# Additional temporary files
+*.bak
+*.backup
+*.orig
+
