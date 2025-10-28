@@ -13,17 +13,18 @@ on:
         required: false
         default: false
         type: boolean
-  schedule:
-    # Run every day at 2 AM UTC (adjust timezone as needed)
-    - cron: '0 2 * * *'
-  push:
-    branches: [ main, develop ]
-    paths:
-      - 'data/video_database.json'
-      - 'src/batch_processor.py'
-      - 'src/database/**'
-      - 'Dockerfile'
-      - 'docker-compose-batch.yml'
+  # Disabled automatic triggers - enable when ready for production
+  # schedule:
+  #   # Run every day at 2 AM UTC (adjust timezone as needed)
+  #   - cron: '0 2 * * *'
+  # push:
+  #   branches: [ main, develop ]
+  #   paths:
+  #     - 'data/video_database.json'
+  #     - 'src/batch_processor.py'
+  #     - 'src/database/**'
+  #     - 'Dockerfile'
+  #     - 'docker-compose-batch.yml'
 
 env:
   REGISTRY: ghcr.io

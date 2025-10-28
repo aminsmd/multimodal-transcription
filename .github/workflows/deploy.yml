@@ -12,6 +12,11 @@ env:
   ECS_CLUSTER: multimodal-transcription-cluster
   ECS_SERVICE: multimodal-transcription-service
   ECS_TASK_DEFINITION: multimodal-transcription-task
+  
+  # Network Configuration
+  VPC_ID: vpc-f2452499
+  SUBNET_IDS: subnet-9b7957d7,subnet-e74bc28c,subnet-8135f2fc
+  SECURITY_GROUP_ID: sg-0b638085b666a013f
 
 jobs:
   build-and-deploy:
@@ -90,7 +95,7 @@ jobs:
             --task-definition $TASK_DEF_ARN \
             --desired-count 0 \
             --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[subnet-9b7957d7],securityGroups=[sg-0b638085b666a013f],assignPublicIp=ENABLED}"
+            --network-configuration "awsvpcConfiguration={subnets=[${{ env.SUBNET_IDS }}],securityGroups=[${{ env.SECURITY_GROUP_ID }}],assignPublicIp=ENABLED}"
 
       - name: Wait for deployment to complete
         run: |
