@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  batch-transcription:
+    build: .
+    container_name: multimodal-transcription-batch
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount data directory for videos and database
+      - ./data:/app/data
+      # Mount outputs directory for results
+      - ./outputs:/app/outputs
+      # Mount logs directory
+      - ./logs:/app/logs
+    working_dir: /app
+    command: >
+      python src/batch_processor.py
+      --database /app/data/video_database.json
+      --base-dir /app/outputs
+      --data-dir /app/data
+      --verbose
+    restart: "no"  # Don't restart automatically - let ECS handle it
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+
+volumes:
+  outputs:
+    driver: local
+  data:
+    driver: local
+  logs:
+    driver: local

@@ -1,0 +1,77 @@
+{
+  "family": "batch-transcription-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "4096",
+  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "batch-transcription",
+      "image": "YOUR_ACCOUNT_ID.dkr.ecr.us-west-2.amazonaws.com/multimodal-transcription:latest",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/batch-transcription",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "environment": [
+        {
+          "name": "PYTHONUNBUFFERED",
+          "value": "1"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "GOOGLE_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:us-west-2:YOUR_ACCOUNT_ID:secret:google-api-key"
+        }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "data-volume",
+          "containerPath": "/app/data",
+          "readOnly": false
+        },
+        {
+          "sourceVolume": "outputs-volume",
+          "containerPath": "/app/outputs",
+          "readOnly": false
+        }
+      ],
+      "command": [
+        "python",
+        "src/batch_processor.py",
+        "--database",
+        "/app/data/video_database.json",
+        "--base-dir",
+        "/app/outputs",
+        "--data-dir",
+        "/app/data",
+        "--verbose"
+      ]
+    }
+  ],
+  "volumes": [
+    {
+      "name": "data-volume",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-12345678",
+        "rootDirectory": "/data",
+        "transitEncryption": "ENABLED"
+      }
+    },
+    {
+      "name": "outputs-volume",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-87654321",
+        "rootDirectory": "/outputs",
+        "transitEncryption": "ENABLED"
+      }
+    }
+  ]
+}

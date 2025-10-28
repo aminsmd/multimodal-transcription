@@ -1,0 +1,150 @@
+name: Docker Build and Test
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'src/batch_processor.py'
+      - 'src/database/**'
+      - 'Dockerfile'
+      - 'docker-compose-batch.yml'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      test_batch:
+        description: 'Run batch processing test'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: false
+        tags: multimodal-transcription:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Test Docker image
+      run: |
+        # Test that the image builds and can run the help command
+        docker run --rm multimodal-transcription:test python src/batch_processor.py --help
+
+  test-batch-processing:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_batch == 'true' || github.event_name == 'workflow_dispatch'
+    needs: build
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: false
+        tags: multimodal-transcription:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Create test data
+      run: |
+        mkdir -p data/videos
+        mkdir -p outputs
+        mkdir -p logs
+        
+        # Create a simple test video database
+        cat > data/video_database.json << 'EOF'
+        {
+          "videos": [
+            {
+              "video_id": "test_video",
+              "filename": "test.mp4",
+              "file_path": "data/videos/test.mp4",
+              "status": "pending",
+              "priority": 1,
+              "created_at": "2025-01-01T00:00:00Z",
+              "metadata": {
+                "duration_seconds": 60,
+                "file_size_mb": 10.0,
+                "resolution": "1920x1080",
+                "fps": 30
+              },
+              "processing_config": {
+                "chunk_duration": 30,
+                "max_workers": 2,
+                "force_reprocess": false
+              }
+            }
+          ],
+          "database_info": {
+            "version": "1.0",
+            "last_updated": "2025-01-01T00:00:00Z",
+            "total_videos": 1,
+            "pending_videos": 1,
+            "processed_videos": 0,
+            "failed_videos": 0
+          }
+        }
+        EOF
+
+    - name: Test batch processor (dry run)
+      env:
+        GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      run: |
+        # Test that the batch processor can start and read the database
+        docker run --rm \
+          -v $(pwd)/data:/app/data \
+          -v $(pwd)/outputs:/app/outputs \
+          -v $(pwd)/logs:/app/logs \
+          -e GOOGLE_API_KEY=$GOOGLE_API_KEY \
+          multimodal-transcription:test \
+          python src/batch_processor.py \
+            --database /app/data/video_database.json \
+            --base-dir /app/outputs \
+            --data-dir /app/data \
+            --max-videos 0 \
+            --verbose
+
+    - name: Check database was updated
+      run: |
+        # Verify the database was updated (should show 0 videos processed due to max-videos=0)
+        cat data/video_database.json | jq '.database_info'
+
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'multimodal-transcription:test'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'

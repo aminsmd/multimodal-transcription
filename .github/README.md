@@ -1,182 +1,174 @@
-# GitHub Actions CI/CD Setup
+# GitHub Actions for Multimodal Transcription
 
-This repository includes comprehensive GitHub Actions workflows for continuous integration, testing, and deployment.
+This repository includes several GitHub Actions workflows for building, testing, and deploying the multimodal transcription pipeline.
 
 ## Workflows Overview
 
-### 1. CI/CD Pipeline (`.github/workflows/ci.yml`)
-- **Triggers**: Push to main/develop branches, pull requests, manual dispatch
+### 1. Docker Build and Test (`.github/workflows/docker-test.yml`)
+- **Triggers**: Push to main/develop, pull requests, manual dispatch
+- **Purpose**: Build and test Docker images
 - **Features**:
-  - Python 3.11 testing with pytest
-  - Code linting with flake8, black, and isort
-  - Coverage reporting with codecov
-  - Docker build and test
+  - Builds Docker image with buildx
+  - Tests image can run help command
+  - Optional batch processing test with dry run
   - Security scanning with Trivy
-  - Dependency security checks
+  - Caching for faster builds
 
-### 2. Docker Build and Push (`.github/workflows/docker-publish.yml`)
-- **Triggers**: Push to main, tags, pull requests, manual dispatch
+### 2. Batch Processing (`.github/workflows/batch-processing.yml`)
+- **Triggers**: Manual dispatch, scheduled (daily at 2 AM UTC), push to main/develop
+- **Purpose**: Run batch video processing
 - **Features**:
-  - Multi-platform Docker builds (linux/amd64, linux/arm64)
-  - Automatic tagging based on branches and semantic versioning
-  - GitHub Container Registry publishing
-  - Build caching for faster builds
+  - Builds and pushes Docker image to GitHub Container Registry
+  - Runs batch processing locally or in Docker
+  - Uploads results as artifacts
+  - Supports configurable max videos per run
 
-### 3. Release Workflow (`.github/workflows/release.yml`)
-- **Triggers**: Version tags (v*), manual dispatch
+### 3. ECS Deployment (`.github/workflows/ecs-deploy.yml`)
+- **Triggers**: Manual dispatch, push to main
+- **Purpose**: Deploy to AWS ECS for production batch processing
 - **Features**:
-  - Automatic release creation
-  - Python package building and publishing
-  - Docker image publishing for releases
-  - Release notes generation
+  - Builds and pushes to Amazon ECR
+  - Deploys ECS task definition
+  - Runs batch processing as ECS task
+  - Cleans up old ECR images
 
-### 4. Performance Testing (`.github/workflows/performance-test.yml`)
-- **Triggers**: Push to main, pull requests, manual dispatch
-- **Features**:
-  - Performance benchmarking
-  - Memory profiling
-  - Resource usage monitoring
-  - PR performance comments
+## Required Secrets
 
-## Required GitHub Secrets
+Configure these secrets in your GitHub repository settings:
 
-To enable full functionality, you need to configure the following secrets in your GitHub repository:
+### Required for All Workflows
+- `GOOGLE_API_KEY`: Your Google API key for Gemini AI
 
-### Required Secrets
+### Required for ECS Deployment
+- `AWS_ACCESS_KEY_ID`: AWS access key for ECR and ECS
+- `AWS_SECRET_ACCESS_KEY`: AWS secret key for ECR and ECS
 
-1. **`GOOGLE_API_KEY`**
-   - **Description**: Google API key for Gemini AI transcription
-   - **How to get**: 
-     1. Go to [Google AI Studio](https://makersuite.google.com/app/apikey)
-     2. Create a new API key
-     3. Copy the key
-   - **Usage**: Used in CI tests and Docker builds
+## Usage
 
-### Optional Secrets
+### Manual Batch Processing
+1. Go to Actions tab in GitHub
+2. Select "Batch Video Processing"
+3. Click "Run workflow"
+4. Configure parameters:
+   - Max videos to process
+   - Force reprocessing (if needed)
 
-2. **`CODECOV_TOKEN`** (Optional)
-   - **Description**: Codecov token for enhanced coverage reporting
-   - **How to get**: Sign up at [codecov.io](https://codecov.io) and get your repository token
-   - **Usage**: Enhanced coverage reporting and PR comments
+### Scheduled Processing
+The workflow runs automatically every day at 2 AM UTC. To modify the schedule, edit the cron expression in `batch-processing.yml`:
 
-3. **`DOCKER_HUB_TOKEN`** (Optional)
-   - **Description**: Docker Hub token for publishing to Docker Hub
-   - **How to get**: 
-     1. Go to Docker Hub → Account Settings → Security
-     2. Create a new access token
-   - **Usage**: Alternative to GitHub Container Registry
-
-## Setting Up Secrets
-
-1. Go to your GitHub repository
-2. Click on **Settings** → **Secrets and variables** → **Actions**
-3. Click **New repository secret**
-4. Add each secret with the exact name and value
-
-## Workflow Features
-
-### Automated Testing
-- Runs on every push and pull request
-- Tests Python code with pytest
-- Validates Docker builds
-- Performs security scans
-- Checks code quality with linting
-
-### Docker Integration
-- Builds multi-platform Docker images
-- Publishes to GitHub Container Registry
-- Supports semantic versioning
-- Includes build caching for performance
-
-### Release Management
-- Automatic releases on version tags
-- Python package publishing
-- Docker image tagging
-- Release notes generation
-
-### Performance Monitoring
-- Benchmark testing
-- Memory profiling
-- Resource usage tracking
-- Performance regression detection
-
-## Local Development
-
-To run the same checks locally that GitHub Actions performs:
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-pip install flake8 black isort pytest pytest-cov
-
-# Run linting
-black --check src/ tests/ examples/
-isort --check-only src/ tests/ examples/
-flake8 src/ tests/ examples/
-
-# Run tests
-pytest tests/ -v --cov=src --cov-report=html
-
-# Build Docker image
-docker build -t multimodal-transcription:test .
-
-# Test Docker image
-docker run --rm multimodal-transcription:test --help
+```yaml
+schedule:
+  - cron: '0 2 * * *'  # Daily at 2 AM UTC
 ```
 
-## Workflow Status Badges
+### ECS Deployment
+1. Set up AWS credentials as secrets
+2. Update `ecs-task-definition.json` with your AWS account details
+3. Run the "ECS Batch Processing Deployment" workflow
+4. Configure ECS cluster, service, and task definition
 
-Add these badges to your README.md:
+## Configuration
 
-```markdown
-![CI/CD Pipeline](https://github.com/your-username/multimodal-transcription/workflows/CI%2FCD%20Pipeline/badge.svg)
-![Docker Build](https://github.com/your-username/multimodal-transcription/workflows/Docker%20Build%20and%20Push/badge.svg)
-![Release](https://github.com/your-username/multimodal-transcription/workflows/Release/badge.svg)
-```
+### Video Database
+The batch processor reads from `data/video_database.json`. This file should contain:
+- Video metadata (file paths, processing config)
+- Status tracking (pending, processing, completed, failed)
+- Priority ordering
+
+### Docker Configuration
+- Base image: `python:3.11-slim`
+- Includes FFmpeg for video processing
+- Runs as non-root user for security
+- Exposes port 8000 (for future web interface)
+
+### ECS Task Definition
+- CPU: 2048 (2 vCPU)
+- Memory: 4096 MB (4 GB)
+- Uses EFS for persistent storage
+- Supports both data and outputs volumes
+
+## Monitoring
+
+### GitHub Actions
+- View workflow runs in the Actions tab
+- Check logs for processing details
+- Download artifacts for results
+
+### ECS (if deployed)
+- Monitor tasks in ECS console
+- Check CloudWatch logs for `/ecs/batch-transcription`
+- Set up CloudWatch alarms for failures
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Tests failing due to missing GOOGLE_API_KEY**
-   - Ensure the secret is set in repository settings
-   - Check that the secret name is exactly `GOOGLE_API_KEY`
+1. **API Key Not Set**
+   - Ensure `GOOGLE_API_KEY` secret is configured
+   - Check secret name matches exactly
 
-2. **Docker build failures**
-   - Check that Dockerfile is valid
-   - Ensure all dependencies are properly specified
-   - Verify build context includes all necessary files
+2. **Docker Build Fails**
+   - Check Dockerfile syntax
+   - Verify all dependencies in requirements.txt
+   - Review build logs for specific errors
 
-3. **Security scan failures**
-   - Review Trivy scan results
-   - Update vulnerable dependencies
-   - Check for security best practices
+3. **Batch Processing Fails**
+   - Verify video files exist in `data/videos/`
+   - Check database JSON format
+   - Review processing logs for API errors
 
-4. **Performance test failures**
-   - Ensure test video is available
-   - Check resource limits
-   - Review memory usage patterns
+4. **ECS Deployment Fails**
+   - Verify AWS credentials are correct
+   - Check ECS task definition JSON
+   - Ensure EFS file systems exist
+   - Verify IAM roles have correct permissions
 
-### Getting Help
-
-- Check the [Actions tab](https://github.com/your-username/multimodal-transcription/actions) for detailed logs
-- Review workflow files for configuration issues
-- Check repository secrets are properly configured
-- Ensure all required dependencies are available
+### Debug Mode
+Enable verbose logging by adding `--verbose` to batch processor commands in the workflows.
 
 ## Customization
 
-### Adding New Workflows
-1. Create a new `.yml` file in `.github/workflows/`
-2. Follow the existing patterns for triggers and jobs
-3. Test locally before pushing
+### Adding New Triggers
+Edit the `on:` section in workflow files to add new triggers:
 
-### Modifying Existing Workflows
-1. Edit the workflow files in `.github/workflows/`
-2. Test changes in a feature branch first
-3. Use workflow dispatch for manual testing
+```yaml
+on:
+  push:
+    branches: [ main, develop ]
+    paths: [ 'src/**' ]  # Only trigger on source changes
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+```
 
-### Adding New Secrets
-1. Add the secret to repository settings
-2. Update workflow files to use the new secret
-3. Document the secret in this README
+### Modifying Processing Parameters
+Update the batch processor command in workflows:
+
+```yaml
+python src/batch_processor.py \
+  --database /app/data/video_database.json \
+  --base-dir /app/outputs \
+  --data-dir /app/data \
+  --max-videos 5 \
+  --chunk-duration 600 \
+  --max-workers 8 \
+  --verbose
+```
+
+### Adding Notifications
+Add notification steps to workflows:
+
+```yaml
+- name: Notify on Success
+  uses: 8398a7/action-slack@v3
+  with:
+    status: success
+    text: 'Batch processing completed successfully!'
+  if: success()
+
+- name: Notify on Failure
+  uses: 8398a7/action-slack@v3
+  with:
+    status: failure
+    text: 'Batch processing failed!'
+  if: failure()
+```
