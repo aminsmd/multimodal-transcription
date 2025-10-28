@@ -92,8 +92,7 @@ jobs:
           --input "s3://${{ env.S3_BUCKET }}/${{ steps.video-path.outputs.video-path }}" \
           --output-dir "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX" \
           --chunk-size 60 \
-          --max-workers 2 \
-          --verbose
+          --max-workers 2
 
     - name: Show results
       run: |
