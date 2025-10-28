@@ -1,0 +1,111 @@
+name: Simple Deploy (No IAM Roles)
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_video:
+        description: 'Video to test'
+        required: true
+        default: 'adam'
+        type: choice
+        options:
+          - adam
+          - angela
+          - audrey
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REPOSITORY: multimodal-transcription
+  S3_BUCKET: multimodal-transcription-videos-1761690600
+
+jobs:
+  simple-deploy:
+    name: Simple Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Set video path
+      id: video-path
+      run: |
+        case "${{ github.event.inputs.test_video }}" in
+          "adam")
+            echo "video-path=test-videos/Adam_2024-03-03_6_32_PM.mp4" >> $GITHUB_OUTPUT
+            echo "video-name=Adam" >> $GITHUB_OUTPUT
+            ;;
+          "angela")
+            echo "video-path=test-videos/Angela_2025-03-10_2_11_PM.mp4" >> $GITHUB_OUTPUT
+            echo "video-name=Angela" >> $GITHUB_OUTPUT
+            ;;
+          "audrey")
+            echo "video-path=test-videos/Audrey_2025-04-06_6_20_PM-2.mp4" >> $GITHUB_OUTPUT
+            echo "video-name=Audrey" >> $GITHUB_OUTPUT
+            ;;
+        esac
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build and push image
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: simple-deploy-${{ github.run_number }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "image-uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Test with Docker locally
+      run: |
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        OUTPUT_PREFIX="simple-deploy-outputs/${{ steps.video-path.outputs.video-name }}-$TIMESTAMP"
+        
+        echo "🎬 Testing video: ${{ steps.video-path.outputs.video-name }}"
+        echo "📁 Output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
+        
+        # Test the ECR image locally (simulating deployed environment)
+        docker run --rm \
+          -e GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}" \
+          -e AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" \
+          -e AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+          -e AWS_DEFAULT_REGION="${{ env.AWS_REGION }}" \
+          ${{ steps.build-image.outputs.image-uri }} \
+          python src/transcription_pipeline.py \
+          --input "s3://${{ env.S3_BUCKET }}/${{ steps.video-path.outputs.video-path }}" \
+          --output-dir "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX" \
+          --chunk-size 60 \
+          --max-workers 2 \
+          --verbose
+
+    - name: List S3 output files
+      run: |
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        OUTPUT_PREFIX="simple-deploy-outputs/${{ steps.video-path.outputs.video-name }}-$TIMESTAMP"
+        
+        echo "📋 S3 Output files:"
+        aws s3 ls "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/" --recursive || echo "No files found"
+        
+        echo ""
+        echo "🔗 View results in S3:"
+        echo "https://s3.console.aws.amazon.com/s3/buckets/${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
+
+    - name: Test summary
+      run: |
+        echo "✅ Simple deployment test completed!"
+        echo "🎬 Video: ${{ steps.video-path.outputs.video-name }}"
+        echo "📦 Image: ${{ steps.build-image.outputs.image-uri }}"
+        echo "📁 Results: s3://${{ env.S3_BUCKET }}/simple-deploy-outputs/"
