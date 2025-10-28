@@ -83,8 +83,9 @@ jobs:
         echo "📁 Local output: $LOCAL_OUTPUT_DIR"
         echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
         
-        # Create local output directory
+        # Create local output directory with proper permissions
         mkdir -p $LOCAL_OUTPUT_DIR
+        chmod 777 $LOCAL_OUTPUT_DIR
         
         # Test the ECR image with local output directory
         docker run --rm \
