@@ -1,0 +1,178 @@
+name: Auto Deploy on Push
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # Allow manual trigger too
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REPOSITORY: multimodal-transcription
+  ECS_CLUSTER: multimodal-transcription-cluster
+  ECS_TASK_DEFINITION: multimodal-transcription-ecr
+  S3_BUCKET: multimodal-transcription-videos-1761690600
+  S3_VIDEO_PATH: test-videos/Adam_2024-03-03_6_32_PM.mp4
+  S3_OUTPUT_PREFIX: deployed-test-outputs
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build a docker container and push it to ECR
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "image-uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Create ECS cluster if it doesn't exist
+      run: |
+        aws ecs describe-clusters --clusters ${{ env.ECS_CLUSTER }} || \
+        aws ecs create-cluster --cluster-name ${{ env.ECS_CLUSTER }}
+
+    - name: Create CloudWatch log group
+      run: |
+        aws logs create-log-group --log-group-name "/ecs/${{ env.ECS_TASK_DEFINITION }}" || true
+
+    - name: Create task definition
+      run: |
+        cat > task-definition.json << EOF
+        {
+          "family": "${{ env.ECS_TASK_DEFINITION }}",
+          "networkMode": "awsvpc",
+          "requiresCompatibilities": ["FARGATE"],
+          "cpu": "2048",
+          "memory": "4096",
+          "executionRoleArn": "arn:aws:iam::669655810547:role/ecsTaskExecutionRole",
+          "containerDefinitions": [
+            {
+              "name": "multimodal-transcription",
+              "image": "${{ steps.build-image.outputs.image-uri }}",
+              "essential": true,
+              "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                  "awslogs-group": "/ecs/${{ env.ECS_TASK_DEFINITION }}",
+                  "awslogs-region": "${{ env.AWS_REGION }}",
+                  "awslogs-stream-prefix": "ecs"
+                }
+              },
+              "environment": [
+                {
+                  "name": "PYTHONUNBUFFERED",
+                  "value": "1"
+                },
+                {
+                  "name": "AWS_DEFAULT_REGION",
+                  "value": "${{ env.AWS_REGION }}"
+                }
+              ],
+              "secrets": [
+                {
+                  "name": "GOOGLE_API_KEY",
+                  "valueFrom": "arn:aws:secretsmanager:${{ env.AWS_REGION }}:669655810547:secret:google-api-key"
+                }
+              ],
+              "command": [
+                "python",
+                "src/transcription_pipeline.py",
+                "--input",
+                "s3://${{ env.S3_BUCKET }}/${{ env.S3_VIDEO_PATH }}",
+                "--output-dir",
+                "s3://${{ env.S3_BUCKET }}/${{ env.S3_OUTPUT_PREFIX }}",
+                "--chunk-size",
+                "120",
+                "--max-workers",
+                "2",
+                "--verbose"
+              ]
+            }
+          ]
+        }
+        EOF
+
+    - name: Register task definition
+      run: |
+        aws ecs register-task-definition --cli-input-json file://task-definition.json
+
+    - name: Run ECS task
+      run: |
+        # Get the latest task definition revision
+        TASK_DEF_ARN=$(aws ecs describe-task-definition \
+          --task-definition ${{ env.ECS_TASK_DEFINITION }} \
+          --query 'taskDefinition.taskDefinitionArn' \
+          --output text)
+        
+        # Run the task
+        TASK_ARN=$(aws ecs run-task \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --task-definition $TASK_DEF_ARN \
+          --launch-type FARGATE \
+          --network-configuration "awsvpcConfiguration={subnets=[subnet-9b7957d7,subnet-e74bc28c,subnet-8135f2fc],securityGroups=[sg-0b638085b666a013f],assignPublicIp=ENABLED}" \
+          --query 'tasks[0].taskArn' \
+          --output text)
+        
+        echo "Task started: $TASK_ARN"
+        
+        # Wait for task to complete
+        aws ecs wait tasks-stopped --cluster ${{ env.ECS_CLUSTER }} --tasks $TASK_ARN
+        
+        # Get task status
+        TASK_STATUS=$(aws ecs describe-tasks \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --tasks $TASK_ARN \
+          --query 'tasks[0].lastStatus' \
+          --output text)
+        
+        EXIT_CODE=$(aws ecs describe-tasks \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --tasks $TASK_ARN \
+          --query 'tasks[0].containers[0].exitCode' \
+          --output text)
+        
+        if [ "$TASK_STATUS" = "STOPPED" ] && [ "$EXIT_CODE" = "0" ]; then
+          echo "✅ Task completed successfully!"
+        else
+          echo "❌ Task failed with status: $TASK_STATUS, exit code: $EXIT_CODE"
+          exit 1
+        fi
+
+    - name: List S3 output files
+      run: |
+        echo "📋 S3 Output files:"
+        aws s3 ls "s3://${{ env.S3_BUCKET }}/${{ env.S3_OUTPUT_PREFIX }}/" --recursive || echo "No files found"
+
+    - name: Clean up old ECR images
+      run: |
+        # Keep only the last 5 images
+        aws ecr list-images \
+          --repository-name ${{ env.ECR_REPOSITORY }} \
+          --filter tagStatus=TAGGED \
+          --query 'imageIds[?imagePushedAt<`'$(date -d '7 days ago' --iso-8601)`'].imageDigest' \
+          --output text | \
+        xargs -r aws ecr batch-delete-image \
+          --repository-name ${{ env.ECR_REPOSITORY }} \
+          --image-ids imageDigest= || true

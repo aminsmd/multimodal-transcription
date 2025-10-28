@@ -1,0 +1,144 @@
+name: Quick Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_now:
+        description: 'Run test immediately with Adam video'
+        required: true
+        default: true
+        type: boolean
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REPOSITORY: multimodal-transcription
+  ECS_CLUSTER: multimodal-transcription-cluster
+  ECS_TASK_DEFINITION: multimodal-transcription-quick-test
+  S3_BUCKET: multimodal-transcription-videos-1761690600
+  S3_VIDEO_PATH: test-videos/Adam_2024-03-03_6_32_PM.mp4
+
+jobs:
+  quick-test:
+    name: Quick Test
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_now == true
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build and push image
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: quick-test-${{ github.run_number }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "image-uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Setup ECS
+      run: |
+        # Create cluster if needed
+        aws ecs describe-clusters --clusters ${{ env.ECS_CLUSTER }} || \
+        aws ecs create-cluster --cluster-name ${{ env.ECS_CLUSTER }}
+        
+        # Create log group
+        aws logs create-log-group --log-group-name "/ecs/${{ env.ECS_TASK_DEFINITION }}" || true
+
+    - name: Create and run task
+      run: |
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        OUTPUT_PREFIX="quick-test-outputs/adam-$TIMESTAMP"
+        
+        # Create task definition
+        cat > task-def.json << EOF
+        {
+          "family": "${{ env.ECS_TASK_DEFINITION }}",
+          "networkMode": "awsvpc",
+          "requiresCompatibilities": ["FARGATE"],
+          "cpu": "1024",
+          "memory": "2048",
+          "executionRoleArn": "arn:aws:iam::669655810547:role/ecsTaskExecutionRole",
+          "containerDefinitions": [
+            {
+              "name": "multimodal-transcription",
+              "image": "${{ steps.build-image.outputs.image-uri }}",
+              "essential": true,
+              "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                  "awslogs-group": "/ecs/${{ env.ECS_TASK_DEFINITION }}",
+                  "awslogs-region": "${{ env.AWS_REGION }}",
+                  "awslogs-stream-prefix": "ecs"
+                }
+              },
+              "environment": [
+                {"name": "PYTHONUNBUFFERED", "value": "1"},
+                {"name": "AWS_DEFAULT_REGION", "value": "${{ env.AWS_REGION }}"}
+              ],
+              "secrets": [
+                {
+                  "name": "GOOGLE_API_KEY",
+                  "valueFrom": "arn:aws:secretsmanager:${{ env.AWS_REGION }}:669655810547:secret:google-api-key"
+                }
+              ],
+              "command": [
+                "python", "src/transcription_pipeline.py",
+                "--input", "s3://${{ env.S3_BUCKET }}/${{ env.S3_VIDEO_PATH }}",
+                "--output-dir", "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX",
+                "--chunk-size", "60",
+                "--max-workers", "2",
+                "--verbose"
+              ]
+            }
+          ]
+        }
+        EOF
+        
+        # Register task definition
+        aws ecs register-task-definition --cli-input-json file://task-def.json
+        
+        # Run task
+        TASK_ARN=$(aws ecs run-task \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --task-definition ${{ env.ECS_TASK_DEFINITION }} \
+          --launch-type FARGATE \
+          --network-configuration "awsvpcConfiguration={subnets=[subnet-9b7957d7,subnet-e74bc28c,subnet-8135f2fc],securityGroups=[sg-0b638085b666a013f],assignPublicIp=ENABLED}" \
+          --query 'tasks[0].taskArn' \
+          --output text)
+        
+        echo "🚀 Task started: $TASK_ARN"
+        echo "📁 Output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
+        
+        # Wait for completion
+        aws ecs wait tasks-stopped --cluster ${{ env.ECS_CLUSTER }} --tasks $TASK_ARN
+        
+        # Check result
+        EXIT_CODE=$(aws ecs describe-tasks \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --tasks $TASK_ARN \
+          --query 'tasks[0].containers[0].exitCode' \
+          --output text)
+        
+        if [ "$EXIT_CODE" = "0" ]; then
+          echo "✅ Quick test completed successfully!"
+          echo "📋 Results: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
+        else
+          echo "❌ Quick test failed with exit code: $EXIT_CODE"
+          exit 1
+        fi
