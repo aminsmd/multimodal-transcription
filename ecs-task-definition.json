@@ -4,18 +4,18 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "2048",
   "memory": "4096",
-  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
-  "taskRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskRole",
+  "executionRoleArn": "arn:aws:iam::669655810547:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::669655810547:role/ecsTaskRole",
   "containerDefinitions": [
     {
       "name": "batch-transcription",
-      "image": "YOUR_ACCOUNT_ID.dkr.ecr.us-west-2.amazonaws.com/multimodal-transcription:latest",
+      "image": "669655810547.dkr.ecr.us-east-2.amazonaws.com/multimodal-transcription:latest",
       "essential": true,
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/batch-transcription",
-          "awslogs-region": "us-west-2",
+          "awslogs-region": "us-east-2",
           "awslogs-stream-prefix": "ecs"
         }
       },
@@ -28,7 +28,7 @@
       "secrets": [
         {
           "name": "GOOGLE_API_KEY",
-          "valueFrom": "arn:aws:secretsmanager:us-west-2:YOUR_ACCOUNT_ID:secret:google-api-key"
+          "valueFrom": "arn:aws:secretsmanager:us-east-2:669655810547:secret:google-api-key"
         }
       ],
       "mountPoints": [

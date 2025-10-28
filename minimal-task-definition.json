@@ -1,0 +1,36 @@
+{
+  "family": "multimodal-transcription-minimal",
+  "networkMode": "bridge",
+  "requiresCompatibilities": ["EC2"],
+  "containerDefinitions": [
+    {
+      "name": "multimodal-transcription",
+      "image": "669655810547.dkr.ecr.us-east-2.amazonaws.com/multimodal-transcription:latest",
+      "essential": true,
+      "memory": 2048,
+      "environment": [
+        {
+          "name": "PYTHONUNBUFFERED",
+          "value": "1"
+        },
+        {
+          "name": "AWS_DEFAULT_REGION",
+          "value": "us-east-2"
+        }
+      ],
+      "command": [
+        "python",
+        "src/transcription_pipeline.py",
+        "--input",
+        "s3://multimodal-transcription-videos-1761690600/test-videos/Adam_2024-03-03_6_32_PM.mp4",
+        "--output-dir",
+        "s3://multimodal-transcription-videos-1761690600/deployed-test-outputs",
+        "--chunk-size",
+        "120",
+        "--max-workers",
+        "2",
+        "--verbose"
+      ]
+    }
+  ]
+}
