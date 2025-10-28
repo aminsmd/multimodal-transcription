@@ -77,12 +77,18 @@ jobs:
       run: |
         TIMESTAMP=$(date +%Y%m%d_%H%M%S)
         OUTPUT_PREFIX="test-outputs/${{ steps.video-path.outputs.video-name }}-$TIMESTAMP"
+        LOCAL_OUTPUT_DIR="/tmp/transcription-output"
         
         echo "🎬 Testing video: ${{ steps.video-path.outputs.video-name }}"
-        echo "📁 Output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
+        echo "📁 Local output: $LOCAL_OUTPUT_DIR"
+        echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
         
-        # Test the ECR image
+        # Create local output directory
+        mkdir -p $LOCAL_OUTPUT_DIR
+        
+        # Test the ECR image with local output directory
         docker run --rm \
+          -v $LOCAL_OUTPUT_DIR:/app/outputs \
           -e GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}" \
           -e AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" \
           -e AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
@@ -90,19 +96,27 @@ jobs:
           ${{ steps.build-image.outputs.image-uri }} \
           python src/transcription_pipeline.py \
           --input "s3://${{ env.S3_BUCKET }}/${{ steps.video-path.outputs.video-path }}" \
-          --output-dir "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX" \
+          --output-dir "/app/outputs" \
           --chunk-size 60 \
           --max-workers 2
+        
+        # Upload results to S3
+        echo "📤 Uploading results to S3..."
+        aws s3 sync $LOCAL_OUTPUT_DIR/ "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
+        
+        # Clean up local files
+        echo "🧹 Cleaning up local files..."
+        rm -rf $LOCAL_OUTPUT_DIR
+        
+        # Store output prefix for results step
+        echo "OUTPUT_PREFIX=$OUTPUT_PREFIX" >> $GITHUB_ENV
 
     - name: Show results
       run: |
-        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-        OUTPUT_PREFIX="test-outputs/${{ steps.video-path.outputs.video-name }}-$TIMESTAMP"
-        
         echo "✅ Test completed successfully!"
         echo "🎬 Video: ${{ steps.video-path.outputs.video-name }}"
         echo "📦 Image: ${{ steps.build-image.outputs.image-uri }}"
-        echo "📁 Results: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
+        echo "📁 Results: s3://${{ env.S3_BUCKET }}/${{ env.OUTPUT_PREFIX }}/"
         echo ""
         echo "📋 S3 Output files:"
-        aws s3 ls "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/" --recursive || echo "No files found"
+        aws s3 ls "s3://${{ env.S3_BUCKET }}/${{ env.OUTPUT_PREFIX }}/" --recursive || echo "No files found"
