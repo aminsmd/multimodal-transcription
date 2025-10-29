@@ -137,20 +137,26 @@ jobs:
       run: |
         echo "🧹 Cleaning up old ECR images..."
         
-        # Get all images except the current one
-        CURRENT_IMAGE_DIGEST=$(aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} --image-ids imageTag=${{ steps.build-image.outputs.image-tag }} --query 'imageDetails[0].imageDigest' --output text)
+        # Get current image digest using the image URI
+        CURRENT_IMAGE_DIGEST=$(aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} --query 'imageDetails[0].imageDigest' --output text)
         
-        # List all images
-        ALL_IMAGES=$(aws ecr list-images --repository-name ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} --query 'imageIds[?imageDigest!=`'$CURRENT_IMAGE_DIGEST'`].imageDigest' --output text)
-        
-        if [ ! -z "$ALL_IMAGES" ]; then
-          echo "Deleting old images..."
-          for digest in $ALL_IMAGES; do
-            echo "Deleting: $digest"
-            aws ecr batch-delete-image --repository-name ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} --image-ids imageDigest=$digest || echo "Failed to delete $digest (may be referenced by manifest list)"
-          done
+        if [ "$CURRENT_IMAGE_DIGEST" != "None" ] && [ ! -z "$CURRENT_IMAGE_DIGEST" ]; then
+          echo "Current image digest: $CURRENT_IMAGE_DIGEST"
+          
+          # List all images except the current one
+          ALL_IMAGES=$(aws ecr list-images --repository-name ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} --query 'imageIds[?imageDigest!=`'$CURRENT_IMAGE_DIGEST'`].imageDigest' --output text)
+          
+          if [ ! -z "$ALL_IMAGES" ]; then
+            echo "Deleting old images..."
+            for digest in $ALL_IMAGES; do
+              echo "Deleting: $digest"
+              aws ecr batch-delete-image --repository-name ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} --image-ids imageDigest=$digest || echo "Failed to delete $digest (may be referenced by manifest list)"
+            done
+          else
+            echo "No old images to clean up"
+          fi
         else
-          echo "No old images to clean up"
+          echo "No current image found, skipping cleanup"
         fi
         
         echo "✅ ECR cleanup completed"
