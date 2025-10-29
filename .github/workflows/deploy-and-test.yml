@@ -19,6 +19,10 @@ env:
   AWS_REGION: us-east-2
   ECR_REPOSITORY: multimodal-transcription
   S3_BUCKET: multimodal-transcription-videos-1761690600
+  ECS_CLUSTER: multimodal-transcription-cluster
+  VPC_ID: vpc-f2452499
+  SUBNET_IDS: subnet-9b7957d7,subnet-e74bc28c,subnet-8135f2fc
+  SECURITY_GROUP_ID: sg-0b638085b666a013f
 
 jobs:
   deploy-and-test:
@@ -73,65 +77,148 @@ jobs:
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         echo "image-uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-    - name: Test with video
+    - name: Create ECS cluster if it doesn't exist
+      run: |
+        echo "🔧 Ensuring ECS cluster exists..."
+        aws ecs describe-clusters --clusters ${{ env.ECS_CLUSTER }} || \
+        aws ecs create-cluster --cluster-name ${{ env.ECS_CLUSTER }}
+
+    - name: Create dynamic task definition
+      id: task-def
       run: |
         TIMESTAMP=$(date +%Y%m%d_%H%M%S)
         OUTPUT_PREFIX="test-outputs/${{ steps.video-path.outputs.video-name }}-$TIMESTAMP"
-        LOCAL_OUTPUT_DIR="/tmp/transcription-output"
         
         echo "🎬 Testing video: ${{ steps.video-path.outputs.video-name }}"
-        echo "📁 Local output: $LOCAL_OUTPUT_DIR"
         echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
         
-        # Create local directories with proper permissions
-        mkdir -p $LOCAL_OUTPUT_DIR
-        chmod 777 $LOCAL_OUTPUT_DIR
+        # Create dynamic task definition
+        cat > temp-task-definition.json << EOF
+        {
+          "family": "multimodal-transcription-test-$(date +%s)",
+          "networkMode": "awsvpc",
+          "requiresCompatibilities": ["FARGATE"],
+          "cpu": "2048",
+          "memory": "4096",
+          "executionRoleArn": "arn:aws:iam::669655810547:role/ecsTaskExecutionRole",
+          "taskRoleArn": "arn:aws:iam::669655810547:role/ecsTaskRole",
+          "containerDefinitions": [
+            {
+              "name": "multimodal-transcription",
+              "image": "${{ steps.build-image.outputs.image-uri }}",
+              "essential": true,
+              "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                  "awslogs-group": "/ecs/multimodal-transcription-test",
+                  "awslogs-region": "${{ env.AWS_REGION }}",
+                  "awslogs-stream-prefix": "ecs"
+                }
+              },
+              "environment": [
+                {
+                  "name": "PYTHONUNBUFFERED",
+                  "value": "1"
+                },
+                {
+                  "name": "AWS_DEFAULT_REGION",
+                  "value": "${{ env.AWS_REGION }}"
+                }
+              ],
+              "secrets": [
+                {
+                  "name": "GOOGLE_API_KEY",
+                  "valueFrom": "arn:aws:secretsmanager:${{ env.AWS_REGION }}:669655810547:secret:google-api-key"
+                }
+              ],
+              "command": [
+                "python",
+                "src/transcription_pipeline.py",
+                "--input",
+                "s3://${{ env.S3_BUCKET }}/${{ steps.video-path.outputs.video-path }}",
+                "--output-dir",
+                "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX",
+                "--chunk-size",
+                "600",
+                "--max-workers",
+                "2",
+                "--verbose"
+              ]
+            }
+          ]
+        }
+        EOF
         
-        # Download video from S3 to local
-        LOCAL_VIDEO_PATH="/tmp/input-video.mp4"
-        echo "📥 Downloading video from S3..."
-        aws s3 cp "s3://${{ env.S3_BUCKET }}/${{ steps.video-path.outputs.video-path }}" $LOCAL_VIDEO_PATH
-        
-        # Test the ECR image with local video and output directory
-        docker run --rm \
-          -v $LOCAL_VIDEO_PATH:/app/input-video.mp4:ro \
-          -v $LOCAL_OUTPUT_DIR:/app/outputs \
-          -e GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}" \
-          -e AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" \
-          -e AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
-          -e AWS_DEFAULT_REGION="${{ env.AWS_REGION }}" \
-          ${{ steps.build-image.outputs.image-uri }} \
-          python src/transcription_pipeline.py \
-          --input "/app/input-video.mp4" \
-          --output-dir "/app/outputs" \
-          --chunk-size 600 \
-          --max-workers 2
-        
-        # Upload results to S3 (exclude videos/ and chunks/ directories)
-        echo "📤 Uploading results to S3..."
-        aws s3 sync $LOCAL_OUTPUT_DIR/ "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/" \
-          --exclude "*/videos/*" \
-          --exclude "*/chunks/*" \
-          --exclude "*/raw_responses/*"
-        
-        # Verify upload was successful
-        echo "✅ Verifying S3 upload..."
-        aws s3 ls "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/" --recursive | head -10
-        
-        # Clean up local files with proper permissions
-        echo "🧹 Cleaning up local files..."
-        
-        # Change ownership of files created by Docker container
-        sudo chown -R runner:runner $LOCAL_OUTPUT_DIR 2>/dev/null || true
-        
-        # Remove files with proper permissions
-        sudo rm -rf $LOCAL_OUTPUT_DIR
-        rm -f $LOCAL_VIDEO_PATH
-        
-        echo "✅ Local cleanup completed successfully"
-        
-        # Store output prefix for results step
         echo "OUTPUT_PREFIX=$OUTPUT_PREFIX" >> $GITHUB_ENV
+        echo "output-prefix=$OUTPUT_PREFIX" >> $GITHUB_OUTPUT
+
+    - name: Register and run ECS task
+      run: |
+        echo "📋 Registering task definition..."
+        TASK_DEF_ARN=$(aws ecs register-task-definition \
+          --cli-input-json file://temp-task-definition.json \
+          --query 'taskDefinition.taskDefinitionArn' \
+          --output text)
+        
+        echo "✅ Task definition registered: $TASK_DEF_ARN"
+        
+        echo "🚀 Starting ECS task..."
+        TASK_ARN=$(aws ecs run-task \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --task-definition $TASK_DEF_ARN \
+          --launch-type FARGATE \
+          --network-configuration "awsvpcConfiguration={subnets=[${{ env.SUBNET_IDS }}],securityGroups=[${{ env.SECURITY_GROUP_ID }}],assignPublicIp=ENABLED}" \
+          --query 'tasks[0].taskArn' \
+          --output text)
+        
+        echo "✅ ECS task started: $TASK_ARN"
+        
+        # Wait for task to complete
+        echo "⏳ Waiting for task to complete..."
+        aws ecs wait tasks-stopped \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --tasks $TASK_ARN
+        
+        # Get task status
+        TASK_STATUS=$(aws ecs describe-tasks \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --tasks $TASK_ARN \
+          --query 'tasks[0].lastStatus' \
+          --output text)
+        
+        EXIT_CODE=$(aws ecs describe-tasks \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --tasks $TASK_ARN \
+          --query 'tasks[0].containers[0].exitCode' \
+          --output text)
+        
+        if [ "$TASK_STATUS" = "STOPPED" ] && [ "$EXIT_CODE" = "0" ]; then
+          echo "✅ ECS task completed successfully!"
+        else
+          echo "❌ ECS task failed with status: $TASK_STATUS, exit code: $EXIT_CODE"
+          
+          # Get task logs for debugging
+          echo "📋 Fetching task logs..."
+          LOG_STREAM_NAME=$(aws logs describe-log-streams \
+            --log-group-name "/ecs/multimodal-transcription-test" \
+            --log-stream-name-prefix "ecs/multimodal-transcription/$TASK_ARN" \
+            --query 'logStreams[0].logStreamName' \
+            --output text)
+          
+          if [ "$LOG_STREAM_NAME" != "None" ] && [ ! -z "$LOG_STREAM_NAME" ]; then
+            aws logs get-log-events \
+              --log-group-name "/ecs/multimodal-transcription-test" \
+              --log-stream-name "$LOG_STREAM_NAME" \
+              --start-from-head \
+              --query 'events[*].message' \
+              --output text | tail -20
+          fi
+          
+          exit 1
+        fi
+        
+        # Clean up temporary file
+        rm -f temp-task-definition.json
 
     - name: Clean up old ECR images
       run: |
@@ -165,10 +252,10 @@ jobs:
       run: |
         echo "🧹 Cleaning up unused CloudWatch log groups..."
         
-        # List of log groups to clean up (keep only the one we're using)
+        # List of log groups to clean up (keep only the ones we're using)
         LOG_GROUPS_TO_DELETE=(
           "/ecs/multimodal-transcription-simple"
-          "/ecs/multimodal-transcription-test"
+          "/ecs/batch-transcription"
         )
         
         for log_group in "${LOG_GROUPS_TO_DELETE[@]}"; do
@@ -185,10 +272,11 @@ jobs:
 
     - name: Show results
       run: |
-        echo "✅ Test completed successfully!"
+        echo "✅ ECS test completed successfully!"
         echo "🎬 Video: ${{ steps.video-path.outputs.video-name }}"
         echo "📦 Image: ${{ steps.build-image.outputs.image-uri }}"
-        echo "📁 Results: s3://${{ env.S3_BUCKET }}/${{ env.OUTPUT_PREFIX }}/"
+        echo "📁 Results: s3://${{ env.S3_BUCKET }}/${{ steps.task-def.outputs.output-prefix }}/"
+        echo "🏗️ ECS Cluster: ${{ env.ECS_CLUSTER }}"
         echo ""
         echo "📋 S3 Output files:"
-        aws s3 ls "s3://${{ env.S3_BUCKET }}/${{ env.OUTPUT_PREFIX }}/" --recursive || echo "No files found"
+        aws s3 ls "s3://${{ env.S3_BUCKET }}/${{ steps.task-def.outputs.output-prefix }}/" --recursive || echo "No files found"
