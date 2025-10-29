@@ -83,12 +83,18 @@ jobs:
         echo "📁 Local output: $LOCAL_OUTPUT_DIR"
         echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
         
-        # Create local output directory with proper permissions
+        # Create local directories with proper permissions
         mkdir -p $LOCAL_OUTPUT_DIR
         chmod 777 $LOCAL_OUTPUT_DIR
         
-        # Test the ECR image with local output directory
+        # Download video from S3 to local
+        LOCAL_VIDEO_PATH="/tmp/input-video.mp4"
+        echo "📥 Downloading video from S3..."
+        aws s3 cp "s3://${{ env.S3_BUCKET }}/${{ steps.video-path.outputs.video-path }}" $LOCAL_VIDEO_PATH
+        
+        # Test the ECR image with local video and output directory
         docker run --rm \
+          -v $LOCAL_VIDEO_PATH:/app/input-video.mp4:ro \
           -v $LOCAL_OUTPUT_DIR:/app/outputs \
           -e GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}" \
           -e AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" \
@@ -96,7 +102,7 @@ jobs:
           -e AWS_DEFAULT_REGION="${{ env.AWS_REGION }}" \
           ${{ steps.build-image.outputs.image-uri }} \
           python src/transcription_pipeline.py \
-          --input "s3://${{ env.S3_BUCKET }}/${{ steps.video-path.outputs.video-path }}" \
+          --input "/app/input-video.mp4" \
           --output-dir "/app/outputs" \
           --chunk-size 60 \
           --max-workers 2
@@ -108,6 +114,7 @@ jobs:
         # Clean up local files
         echo "🧹 Cleaning up local files..."
         rm -rf $LOCAL_OUTPUT_DIR
+        rm -f $LOCAL_VIDEO_PATH
         
         # Store output prefix for results step
         echo "OUTPUT_PREFIX=$OUTPUT_PREFIX" >> $GITHUB_ENV
