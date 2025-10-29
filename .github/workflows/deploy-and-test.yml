@@ -107,9 +107,12 @@ jobs:
           --chunk-size 600 \
           --max-workers 2
         
-        # Upload results to S3
+        # Upload results to S3 (exclude videos/ and chunks/ directories)
         echo "📤 Uploading results to S3..."
-        aws s3 sync $LOCAL_OUTPUT_DIR/ "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
+        aws s3 sync $LOCAL_OUTPUT_DIR/ "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/" \
+          --exclude "*/videos/*" \
+          --exclude "*/chunks/*" \
+          --exclude "*/raw_responses/*"
         
         # Verify upload was successful
         echo "✅ Verifying S3 upload..."
@@ -129,6 +132,50 @@ jobs:
         
         # Store output prefix for results step
         echo "OUTPUT_PREFIX=$OUTPUT_PREFIX" >> $GITHUB_ENV
+
+    - name: Clean up old ECR images
+      run: |
+        echo "🧹 Cleaning up old ECR images..."
+        
+        # Get all images except the current one
+        CURRENT_IMAGE_DIGEST=$(aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} --image-ids imageTag=${{ steps.build-image.outputs.image-tag }} --query 'imageDetails[0].imageDigest' --output text)
+        
+        # List all images
+        ALL_IMAGES=$(aws ecr list-images --repository-name ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} --query 'imageIds[?imageDigest!=`'$CURRENT_IMAGE_DIGEST'`].imageDigest' --output text)
+        
+        if [ ! -z "$ALL_IMAGES" ]; then
+          echo "Deleting old images..."
+          for digest in $ALL_IMAGES; do
+            echo "Deleting: $digest"
+            aws ecr batch-delete-image --repository-name ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} --image-ids imageDigest=$digest || echo "Failed to delete $digest (may be referenced by manifest list)"
+          done
+        else
+          echo "No old images to clean up"
+        fi
+        
+        echo "✅ ECR cleanup completed"
+
+    - name: Clean up unused CloudWatch log groups
+      run: |
+        echo "🧹 Cleaning up unused CloudWatch log groups..."
+        
+        # List of log groups to clean up (keep only the one we're using)
+        LOG_GROUPS_TO_DELETE=(
+          "/ecs/multimodal-transcription-simple"
+          "/ecs/multimodal-transcription-test"
+        )
+        
+        for log_group in "${LOG_GROUPS_TO_DELETE[@]}"; do
+          echo "Checking log group: $log_group"
+          if aws logs describe-log-groups --log-group-name-prefix "$log_group" --region ${{ env.AWS_REGION }} --query 'logGroups[0].logGroupName' --output text | grep -q "$log_group"; then
+            echo "Deleting log group: $log_group"
+            aws logs delete-log-group --log-group-name "$log_group" --region ${{ env.AWS_REGION }} || echo "Failed to delete $log_group (may have active streams)"
+          else
+            echo "Log group $log_group not found or already deleted"
+          fi
+        done
+        
+        echo "✅ CloudWatch cleanup completed"
 
     - name: Show results
       run: |
