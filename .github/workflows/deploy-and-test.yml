@@ -104,17 +104,28 @@ jobs:
           python src/transcription_pipeline.py \
           --input "/app/input-video.mp4" \
           --output-dir "/app/outputs" \
-          --chunk-size 60 \
+          --chunk-size 600 \
           --max-workers 2
         
         # Upload results to S3
         echo "📤 Uploading results to S3..."
         aws s3 sync $LOCAL_OUTPUT_DIR/ "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
         
-        # Clean up local files
+        # Verify upload was successful
+        echo "✅ Verifying S3 upload..."
+        aws s3 ls "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/" --recursive | head -10
+        
+        # Clean up local files with proper permissions
         echo "🧹 Cleaning up local files..."
-        rm -rf $LOCAL_OUTPUT_DIR
+        
+        # Change ownership of files created by Docker container
+        sudo chown -R runner:runner $LOCAL_OUTPUT_DIR 2>/dev/null || true
+        
+        # Remove files with proper permissions
+        sudo rm -rf $LOCAL_OUTPUT_DIR
         rm -f $LOCAL_VIDEO_PATH
+        
+        echo "✅ Local cleanup completed successfully"
         
         # Store output prefix for results step
         echo "OUTPUT_PREFIX=$OUTPUT_PREFIX" >> $GITHUB_ENV
