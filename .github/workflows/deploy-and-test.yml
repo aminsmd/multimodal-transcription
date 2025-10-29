@@ -101,7 +101,6 @@ jobs:
           "cpu": "2048",
           "memory": "4096",
           "executionRoleArn": "arn:aws:iam::669655810547:role/ecsTaskExecutionRole",
-          "taskRoleArn": "arn:aws:iam::669655810547:role/ecsTaskRole",
           "containerDefinitions": [
             {
               "name": "multimodal-transcription",
