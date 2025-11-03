@@ -1,6 +1,11 @@
 name: Deploy and Test
 
 on:
+  push:
+    branches:
+      - test-workflow
+      - test
+      - workflow-test
   workflow_dispatch:
     inputs:
       video:
