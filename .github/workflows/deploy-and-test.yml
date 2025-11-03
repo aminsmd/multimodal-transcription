@@ -130,9 +130,10 @@ jobs:
           --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy || \
           echo "Policy already attached or attach failed (may need manual setup)"
         
-        # Allow some time for IAM to propagate
-        echo "⏳ Waiting for IAM changes to propagate..."
-        sleep 5
+        # Allow time for IAM changes to propagate (especially important for newly created roles)
+        # AWS recommends 30-60 seconds for full IAM propagation across all services
+        echo "⏳ Waiting for IAM execution role changes to propagate (30 seconds)..."
+        sleep 30
         
         echo "✅ ECS task execution role is ready: $ROLE_ARN"
         
@@ -164,9 +165,43 @@ jobs:
             --role-name $TASK_ROLE_NAME \
             --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess || \
             echo "S3 policy attach failed (may need manual setup)"
+        else
+          # Role exists, but ensure trust policy is correct
+          echo "📝 Updating trust policy for existing task role..."
+          aws iam update-assume-role-policy \
+            --role-name $TASK_ROLE_NAME \
+            --policy-document '{
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "ecs-tasks.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }]
+            }'
         fi
         
+        # Allow time for IAM changes to propagate (especially important for newly created roles)
+        # AWS recommends 30-60 seconds for full IAM propagation across all services
+        echo "⏳ Waiting for IAM task role changes to propagate (30 seconds)..."
+        sleep 30
+        
+        # Verify the role can be retrieved (helps confirm propagation)
+        echo "🔍 Verifying task role is accessible..."
+        aws iam get-role --role-name $TASK_ROLE_NAME --query 'Role.Arn' --output text
+        
         echo "✅ ECS task role is ready: $TASK_ROLE_ARN"
+
+    - name: Verify IAM roles are ready
+      run: |
+        echo "🔍 Performing final verification of IAM roles..."
+        EXEC_ROLE=$(aws iam get-role --role-name ecsTaskExecutionRole --query 'Role.Arn' --output text)
+        TASK_ROLE=$(aws iam get-role --role-name ecsTaskRole --query 'Role.Arn' --output text)
+        echo "✅ Execution role: $EXEC_ROLE"
+        echo "✅ Task role: $TASK_ROLE"
+        echo "⏳ Final wait to ensure IAM propagation across all AWS services (15 seconds)..."
+        sleep 15
 
     - name: Create dynamic task definition
       id: task-def
