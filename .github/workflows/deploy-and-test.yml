@@ -303,7 +303,7 @@ jobs:
           --cluster ${{ env.ECS_CLUSTER }} \
           --tasks $TASK_ARN
         
-        # Get task status
+        # Get task status and details
         TASK_STATUS=$(aws ecs describe-tasks \
           --cluster ${{ env.ECS_CLUSTER }} \
           --tasks $TASK_ARN \
@@ -316,26 +316,76 @@ jobs:
           --query 'tasks[0].containers[0].exitCode' \
           --output text)
         
+        # Get stop code and reason for better debugging
+        STOP_CODE=$(aws ecs describe-tasks \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --tasks $TASK_ARN \
+          --query 'tasks[0].stopCode' \
+          --output text)
+        
+        STOPPED_REASON=$(aws ecs describe-tasks \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --tasks $TASK_ARN \
+          --query 'tasks[0].stoppedReason' \
+          --output text)
+        
+        # Extract task ID from ARN (last part after final slash) for log stream prefix
+        TASK_ID=$(echo $TASK_ARN | awk -F'/' '{print $NF}')
+        
+        # Check if task succeeded (exit code 0 or null might mean container didn't start)
         if [ "$TASK_STATUS" = "STOPPED" ] && [ "$EXIT_CODE" = "0" ]; then
           echo "✅ ECS task completed successfully!"
         else
           echo "❌ ECS task failed with status: $TASK_STATUS, exit code: $EXIT_CODE"
+          echo "📋 Stop code: $STOP_CODE"
+          echo "📋 Stopped reason: $STOPPED_REASON"
           
           # Get task logs for debugging
           echo "📋 Fetching task logs..."
+          # Extract task ID from ARN (last part after final slash)
+          # Log stream format is typically: {prefix}/{container-name}/{task-id}
+          # Try multiple patterns to find the log stream
+          LOG_STREAM_NAME=""
+          
+          # Try with prefix pattern
           LOG_STREAM_NAME=$(aws logs describe-log-streams \
             --log-group-name "/ecs/multimodal-transcription-test" \
-            --log-stream-name-prefix "ecs/multimodal-transcription/$TASK_ARN" \
-            --query 'logStreams[0].logStreamName' \
-            --output text)
+            --log-stream-name-prefix "ecs/multimodal-transcription" \
+            --order-by LastEventTime \
+            --descending \
+            --max-items 10 \
+            --query "logStreams[?contains(logStreamName, '$TASK_ID')].logStreamName" \
+            --output text 2>/dev/null | head -1 || echo "")
           
-          if [ "$LOG_STREAM_NAME" != "None" ] && [ ! -z "$LOG_STREAM_NAME" ]; then
+          # If not found, try searching by task ID directly
+          if [ -z "$LOG_STREAM_NAME" ] || [ "$LOG_STREAM_NAME" = "None" ]; then
+            LOG_STREAM_NAME=$(aws logs describe-log-streams \
+              --log-group-name "/ecs/multimodal-transcription-test" \
+              --order-by LastEventTime \
+              --descending \
+              --max-items 20 \
+              --query "logStreams[?contains(logStreamName, '$TASK_ID')].logStreamName" \
+              --output text 2>/dev/null | head -1 || echo "")
+          fi
+          
+          if [ ! -z "$LOG_STREAM_NAME" ] && [ "$LOG_STREAM_NAME" != "None" ] && [ "$LOG_STREAM_NAME" != "" ]; then
+            echo "📄 Last 50 lines of logs from: $LOG_STREAM_NAME"
             aws logs get-log-events \
               --log-group-name "/ecs/multimodal-transcription-test" \
               --log-stream-name "$LOG_STREAM_NAME" \
               --start-from-head \
               --query 'events[*].message' \
-              --output text | tail -20
+              --output text | tail -50
+          else
+            echo "⚠️ Could not find logs for task ID: $TASK_ID"
+            echo "📋 Listing recent log streams:"
+            aws logs describe-log-streams \
+              --log-group-name "/ecs/multimodal-transcription-test" \
+              --order-by LastEventTime \
+              --descending \
+              --max-items 5 \
+              --query 'logStreams[*].[logStreamName,lastEventTime]' \
+              --output table 2>/dev/null || echo "Could not list log streams"
           fi
           
           exit 1
