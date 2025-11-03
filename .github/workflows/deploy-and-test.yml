@@ -335,8 +335,7 @@ jobs:
                 "--chunk-size",
                 "600",
                 "--max-workers",
-                "2",
-                "--verbose"
+                "2"
               ]
             }
           ]
