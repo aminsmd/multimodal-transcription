@@ -101,7 +101,7 @@ build_image() {
 
 # Function to run batch processing
 run_batch() {
-    local max_videos=$1
+    local max_videos=$1I
     local no_file_management=$2
     local no_validation=$3
     local verbose=$4
