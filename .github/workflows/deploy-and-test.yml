@@ -136,12 +136,13 @@ jobs:
           echo "Policy already attached or attach failed (may need manual setup)"
         
         # Attach inline policy for Secrets Manager access (required for retrieving secrets)
-        echo "📋 Attaching Secrets Manager inline policy for specific secret..."
-        SECRET_ARN="arn:aws:secretsmanager:${{ env.AWS_REGION }}:669655810547:secret:google-api-key"
+        echo "📋 Attaching Secrets Manager inline policy..."
+        # Use wildcard pattern to match secret ARN with any suffix (AWS adds random suffix)
+        SECRET_ARN_PATTERN="arn:aws:secretsmanager:${{ env.AWS_REGION }}:669655810547:secret:google-api-key*"
         
-        # Create inline policy document with secret ARN (using * to handle ARN suffix)
+        # Create inline policy document with wildcard pattern to match any suffix
         # Use printf to avoid YAML parsing issues with heredocs
-        printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:GetSecretValue","secretsmanager:DescribeSecret"],"Resource":"%s*"}]}' "$SECRET_ARN" > secrets-policy.json
+        printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:GetSecretValue","secretsmanager:DescribeSecret"],"Resource":"%s"}]}' "$SECRET_ARN_PATTERN" > secrets-policy.json
         
         # Attach inline policy
         aws iam put-role-policy \
@@ -224,6 +225,34 @@ jobs:
         echo "⏳ Final wait to ensure IAM propagation across all AWS services (15 seconds)..."
         sleep 15
 
+    - name: Find Secrets Manager secret ARN
+      id: secret-arn
+      run: |
+        echo "🔍 Finding Secrets Manager secret ARN..."
+        # Find the actual secret ARN (AWS adds a random suffix)
+        SECRET_ARN=$(aws secretsmanager list-secrets \
+          --region ${{ env.AWS_REGION }} \
+          --query "SecretList[?contains(Name, 'google-api-key')].ARN" \
+          --output text | head -1)
+        
+        if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
+          echo "⚠️ Could not find secret by name. Trying alternative lookup..."
+          # Try to find by partial ARN match
+          SECRET_ARN=$(aws secretsmanager list-secrets \
+            --region ${{ env.AWS_REGION }} \
+            --query "SecretList[?contains(ARN, 'google-api-key')].ARN" \
+            --output text | head -1)
+        fi
+        
+        if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
+          echo "❌ ERROR: Could not find google-api-key secret in Secrets Manager"
+          echo "Please ensure the secret exists and is accessible"
+          exit 1
+        fi
+        
+        echo "✅ Found secret ARN: $SECRET_ARN"
+        echo "secret-arn=$SECRET_ARN" >> $GITHUB_OUTPUT
+
     - name: Create dynamic task definition
       id: task-def
       run: |
@@ -232,6 +261,7 @@ jobs:
         
         echo "🎬 Testing video: ${{ steps.video-path.outputs.video-name }}"
         echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
+        echo "🔑 Using secret ARN: ${{ steps.secret-arn.outputs.secret-arn }}"
         
         # Create dynamic task definition
         cat > temp-task-definition.json << EOF
@@ -269,7 +299,7 @@ jobs:
               "secrets": [
                 {
                   "name": "GOOGLE_API_KEY",
-                  "valueFrom": "arn:aws:secretsmanager:${{ env.AWS_REGION }}:669655810547:secret:google-api-key"
+                  "valueFrom": "${{ steps.secret-arn.outputs.secret-arn }}"
                 }
               ],
               "command": [
