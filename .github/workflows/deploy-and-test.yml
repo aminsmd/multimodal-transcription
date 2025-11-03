@@ -225,79 +225,55 @@ jobs:
         echo "⏳ Final wait to ensure IAM propagation across all AWS services (15 seconds)..."
         sleep 15
 
-    - name: Find Secrets Manager secret ARN
+    - name: Create or update Secrets Manager secret from GitHub
       id: secret-arn
       run: |
-        echo "🔍 Finding Secrets Manager secret ARN..."
+        echo "🔐 Creating or updating AWS Secrets Manager secret from GitHub..."
         
-        # First, list all secrets to see what's available (for debugging)
-        echo "📋 Listing available secrets..."
-        ALL_SECRETS=$(aws secretsmanager list-secrets \
-          --region ${{ env.AWS_REGION }} \
-          --query "SecretList[*].[Name,ARN]" \
-          --output table 2>&1 || echo "Failed to list secrets")
-        echo "$ALL_SECRETS"
+        SECRET_NAME="google-api-key"
+        SECRET_VALUE="${{ secrets.GOOGLE_API_KEY }}"
         
-        # Try multiple search patterns
-        echo "🔍 Searching for google-api-key secret..."
-        
-        # Method 1: Search by exact name match
-        SECRET_ARN=$(aws secretsmanager list-secrets \
-          --region ${{ env.AWS_REGION }} \
-          --query "SecretList[?Name=='google-api-key'].ARN" \
-          --output text | head -1)
-        
-        # Method 2: Search by name contains
-        if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
-          echo "⚠️ Exact name match failed. Trying contains search..."
-          SECRET_ARN=$(aws secretsmanager list-secrets \
-            --region ${{ env.AWS_REGION }} \
-            --query "SecretList[?contains(Name, 'google-api-key') || contains(Name, 'google')].ARN" \
-            --output text | head -1)
+        if [ -z "$SECRET_VALUE" ]; then
+          echo "❌ ERROR: GOOGLE_API_KEY GitHub secret is not set"
+          echo "Please add GOOGLE_API_KEY to your GitHub repository secrets"
+          exit 1
         fi
         
-        # Method 3: Search by partial ARN match
-        if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
-          echo "⚠️ Name search failed. Trying ARN contains search..."
-          SECRET_ARN=$(aws secretsmanager list-secrets \
-            --region ${{ env.AWS_REGION }} \
-            --query "SecretList[?contains(ARN, 'google-api-key') || contains(ARN, 'google')].ARN" \
-            --output text | head -1)
-        fi
+        # Check if secret already exists
+        EXISTING_SECRET=$(aws secretsmanager describe-secret \
+          --secret-id $SECRET_NAME \
+          --region ${{ env.AWS_REGION }} \
+          --query 'ARN' \
+          --output text 2>&1 || echo "")
         
-        # Method 4: Try to describe the secret directly (if we know the base name)
-        if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
-          echo "⚠️ List search failed. Trying direct describe..."
-          # AWS Secrets Manager might have the secret with a suffix, try to describe it
-          SECRET_INFO=$(aws secretsmanager describe-secret \
-            --secret-id google-api-key \
+        if [[ "$EXISTING_SECRET" =~ "arn:aws:secretsmanager" ]]; then
+          echo "✅ Secret exists: $EXISTING_SECRET"
+          echo "📝 Updating secret value..."
+          # Update existing secret
+          aws secretsmanager put-secret-value \
+            --secret-id $SECRET_NAME \
+            --secret-string "$SECRET_VALUE" \
+            --region ${{ env.AWS_REGION }} > /dev/null
+          SECRET_ARN="$EXISTING_SECRET"
+        else
+          echo "🆕 Creating new secret..."
+          # Create new secret
+          SECRET_ARN=$(aws secretsmanager create-secret \
+            --name $SECRET_NAME \
+            --secret-string "$SECRET_VALUE" \
             --region ${{ env.AWS_REGION }} \
             --query 'ARN' \
-            --output text 2>&1 || echo "")
-          
-          if [ ! -z "$SECRET_INFO" ] && [[ ! "$SECRET_INFO" =~ "error" ]] && [[ ! "$SECRET_INFO" =~ "ResourceNotFoundException" ]]; then
-            SECRET_ARN="$SECRET_INFO"
-          fi
+            --output text)
+          echo "✅ Created secret: $SECRET_ARN"
         fi
         
-        # Fallback: Use partial ARN pattern (AWS ECS can sometimes resolve this)
-        if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
-          echo "⚠️ Could not find secret via lookup. Using fallback ARN pattern..."
-          echo "⚠️ ECS may be able to resolve this, or secret may need to be created."
-          # Use partial ARN without suffix - ECS might resolve it
-          SECRET_ARN="arn:aws:secretsmanager:${{ env.AWS_REGION }}:669655810547:secret:google-api-key"
-          echo "⚠️ Using fallback ARN: $SECRET_ARN"
-          echo "⚠️ If this fails, please:"
-          echo "   1. Verify the secret exists in AWS Secrets Manager console"
-          echo "   2. Check that the secret name is exactly 'google-api-key'"
-          echo "   3. Verify IAM permissions allow listing/describing secrets"
-          echo "   4. Check the region matches: ${{ env.AWS_REGION }}"
-          echo ""
-          echo "Available secrets shown above. Please verify."
-        else
-          echo "✅ Found secret ARN: $SECRET_ARN"
+        # Verify the ARN has the required suffix format
+        if [[ ! "$SECRET_ARN" =~ -[A-Za-z0-9]{6}$ ]]; then
+          echo "⚠️ WARNING: Secret ARN may not have the required suffix format"
+          echo "ARN: $SECRET_ARN"
         fi
         
+        echo "✅ Secret ARN ready: $SECRET_ARN"
         echo "secret-arn=$SECRET_ARN" >> $GITHUB_OUTPUT
 
     - name: Create dynamic task definition
