@@ -144,6 +144,20 @@ jobs:
         
         if aws iam get-role --role-name $TASK_ROLE_NAME &>/dev/null; then
           echo "✅ Task role $TASK_ROLE_NAME already exists"
+          # Role exists, but ensure trust policy is correct
+          echo "📝 Updating trust policy for existing task role..."
+          aws iam update-assume-role-policy \
+            --role-name $TASK_ROLE_NAME \
+            --policy-document '{
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "ecs-tasks.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }]
+            }'
         else
           echo "🆕 Creating task role $TASK_ROLE_NAME..."
           aws iam create-role \
@@ -165,21 +179,6 @@ jobs:
             --role-name $TASK_ROLE_NAME \
             --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess || \
             echo "S3 policy attach failed (may need manual setup)"
-        else
-          # Role exists, but ensure trust policy is correct
-          echo "📝 Updating trust policy for existing task role..."
-          aws iam update-assume-role-policy \
-            --role-name $TASK_ROLE_NAME \
-            --policy-document '{
-              "Version": "2012-10-17",
-              "Statement": [{
-                "Effect": "Allow",
-                "Principal": {
-                  "Service": "ecs-tasks.amazonaws.com"
-                },
-                "Action": "sts:AssumeRole"
-              }]
-            }'
         fi
         
         # Allow time for IAM changes to propagate (especially important for newly created roles)
