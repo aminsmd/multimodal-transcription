@@ -286,66 +286,67 @@ jobs:
         echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
         echo "🔑 Using secret ARN: ${{ steps.secret-arn.outputs.secret-arn }}"
         
-        # Create dynamic task definition
-        cat > temp-task-definition.json << EOF
-        {
-          "family": "multimodal-transcription-test-$(date +%s)",
-          "networkMode": "awsvpc",
-          "requiresCompatibilities": ["FARGATE"],
-          "cpu": "2048",
-          "memory": "4096",
-          "executionRoleArn": "arn:aws:iam::669655810547:role/ecsTaskExecutionRole",
-          "taskRoleArn": "arn:aws:iam::669655810547:role/ecsTaskRole",
-          "containerDefinitions": [
-            {
-              "name": "multimodal-transcription",
-              "image": "${{ steps.build-image.outputs.image-uri }}",
-              "essential": true,
-              "logConfiguration": {
-                "logDriver": "awslogs",
-                "options": {
-                  "awslogs-group": "/ecs/multimodal-transcription-test",
-                  "awslogs-region": "${{ env.AWS_REGION }}",
-                  "awslogs-stream-prefix": "ecs"
-                }
-              },
-              "environment": [
-                {
-                  "name": "PYTHONUNBUFFERED",
-                  "value": "1"
+        # Build command string
+        CMD_STRING='mkdir -p /tmp/video /tmp/outputs && VIDEO_FILENAME=$(basename "$S3_VIDEO_PATH") && aws s3 cp "s3://$S3_BUCKET/$S3_VIDEO_PATH" "/tmp/video/$VIDEO_FILENAME" && python src/transcription_pipeline.py --input "/tmp/video/$VIDEO_FILENAME" --output-dir /tmp/outputs --chunk-size 600 --max-workers 2 && aws s3 sync /tmp/outputs "s3://$S3_BUCKET/$S3_OUTPUT_PREFIX" --exclude '"'"'*.mp4'"'"' --exclude '"'"'*.mov'"'"' --exclude '"'"'*.avi'"'"' --exclude '"'"'*.mkv'"'"' --exclude '"'"'*.webm'"'"' --exclude '"'"'*.m4v'"'"' --exclude '"'"'videos/*'"'"' --exclude '"'"'chunks/*'"'"' --delete'
+        
+        # Create task definition using jq for proper JSON escaping
+        jq -n \
+          --arg family "multimodal-transcription-test-$(date +%s)" \
+          --arg image "${{ steps.build-image.outputs.image-uri }}" \
+          --arg aws_region "${{ env.AWS_REGION }}" \
+          --arg s3_bucket "${{ env.S3_BUCKET }}" \
+          --arg output_prefix "${OUTPUT_PREFIX}" \
+          --arg video_path "${{ steps.video-path.outputs.video-path }}" \
+          --arg secret_arn "${{ steps.secret-arn.outputs.secret-arn }}" \
+          --arg cmd_string "$CMD_STRING" \
+          '{
+            "family": $family,
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "2048",
+            "memory": "4096",
+            "executionRoleArn": "arn:aws:iam::669655810547:role/ecsTaskExecutionRole",
+            "taskRoleArn": "arn:aws:iam::669655810547:role/ecsTaskRole",
+            "containerDefinitions": [
+              {
+                "name": "multimodal-transcription",
+                "image": $image,
+                "essential": true,
+                "logConfiguration": {
+                  "logDriver": "awslogs",
+                  "options": {
+                    "awslogs-group": "/ecs/multimodal-transcription-test",
+                    "awslogs-region": $aws_region,
+                    "awslogs-stream-prefix": "ecs"
+                  }
                 },
-                {
-                  "name": "AWS_DEFAULT_REGION",
-                  "value": "${{ env.AWS_REGION }}"
-                },
-                {
-                  "name": "S3_BUCKET",
-                  "value": "${{ env.S3_BUCKET }}"
-                },
-                {
-                  "name": "S3_OUTPUT_PREFIX",
-                  "value": "${OUTPUT_PREFIX}"
-                },
-                {
-                  "name": "S3_VIDEO_PATH",
-                  "value": "${{ steps.video-path.outputs.video-path }}"
-                }
-              ],
-              "secrets": [
-                {
-                  "name": "GOOGLE_API_KEY",
-                  "valueFrom": "${{ steps.secret-arn.outputs.secret-arn }}"
-                }
-              ],
-              "command": [
-                "sh",
-                "-c",
-                "mkdir -p /tmp/video /tmp/outputs && VIDEO_FILENAME=$(basename \"$S3_VIDEO_PATH\") && aws s3 cp \"s3://$S3_BUCKET/$S3_VIDEO_PATH\" \"/tmp/video/$VIDEO_FILENAME\" && python src/transcription_pipeline.py --input \"/tmp/video/$VIDEO_FILENAME\" --output-dir /tmp/outputs --chunk-size 600 --max-workers 2 && aws s3 sync /tmp/outputs \"s3://$S3_BUCKET/$S3_OUTPUT_PREFIX\" --exclude '*.mp4' --exclude '*.mov' --exclude '*.avi' --exclude '*.mkv' --exclude '*.webm' --exclude '*.m4v' --exclude 'videos/*' --exclude 'chunks/*' --delete"
-              ]
-            }
-          ]
-        }
-        EOF
+                "environment": [
+                  {"name": "PYTHONUNBUFFERED", "value": "1"},
+                  {"name": "AWS_DEFAULT_REGION", "value": $aws_region},
+                  {"name": "S3_BUCKET", "value": $s3_bucket},
+                  {"name": "S3_OUTPUT_PREFIX", "value": $output_prefix},
+                  {"name": "S3_VIDEO_PATH", "value": $video_path}
+                ],
+                "secrets": [
+                  {"name": "GOOGLE_API_KEY", "valueFrom": $secret_arn}
+                ],
+                "command": ["sh", "-c", $cmd_string]
+              }
+            ]
+          }' > temp-task-definition.json
+        
+        # Validate JSON was created successfully
+        if [ ! -s temp-task-definition.json ]; then
+          echo "❌ ERROR: Failed to create task definition JSON"
+          exit 1
+        fi
+        
+        # Validate JSON syntax
+        if ! jq empty temp-task-definition.json 2>/dev/null; then
+          echo "❌ ERROR: Invalid JSON in task definition"
+          cat temp-task-definition.json
+          exit 1
+        fi
         
         echo "OUTPUT_PREFIX=$OUTPUT_PREFIX" >> $GITHUB_ENV
         echo "output-prefix=$OUTPUT_PREFIX" >> $GITHUB_OUTPUT
