@@ -135,6 +135,23 @@ jobs:
           --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy || \
           echo "Policy already attached or attach failed (may need manual setup)"
         
+        # Attach inline policy for Secrets Manager access (required for retrieving secrets)
+        echo "📋 Attaching Secrets Manager inline policy for specific secret..."
+        SECRET_ARN="arn:aws:secretsmanager:${{ env.AWS_REGION }}:669655810547:secret:google-api-key"
+        
+        # Create inline policy document with secret ARN (using * to handle ARN suffix)
+        # Use printf to avoid YAML parsing issues with heredocs
+        printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:GetSecretValue","secretsmanager:DescribeSecret"],"Resource":"%s*"}]}' "$SECRET_ARN" > secrets-policy.json
+        
+        # Attach inline policy
+        aws iam put-role-policy \
+          --role-name $ROLE_NAME \
+          --policy-name SecretsManagerAccess \
+          --policy-document file://secrets-policy.json || \
+          echo "Secrets Manager policy already attached or attach failed (may need manual setup)"
+        
+        rm -f secrets-policy.json
+        
         # Allow time for IAM changes to propagate (especially important for newly created roles)
         # AWS recommends 30-60 seconds for full IAM propagation across all services
         echo "⏳ Waiting for IAM execution role changes to propagate (30 seconds)..."
