@@ -81,6 +81,93 @@ jobs:
         aws ecs describe-clusters --clusters ${{ env.ECS_CLUSTER }} || \
         aws ecs create-cluster --cluster-name ${{ env.ECS_CLUSTER }}
 
+    - name: Ensure ECS task execution role exists
+      run: |
+        echo "🔧 Ensuring ECS task execution role exists..."
+        ROLE_NAME="ecsTaskExecutionRole"
+        ROLE_ARN="arn:aws:iam::669655810547:role/$ROLE_NAME"
+        
+        # Check if role exists
+        if aws iam get-role --role-name $ROLE_NAME &>/dev/null; then
+          echo "✅ Role $ROLE_NAME already exists"
+          
+          # Update trust policy if needed
+          echo "📝 Updating trust policy..."
+          aws iam update-assume-role-policy \
+            --role-name $ROLE_NAME \
+            --policy-document '{
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "ecs-tasks.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }]
+            }'
+        else
+          echo "🆕 Creating role $ROLE_NAME..."
+          
+          # Create role with trust policy
+          aws iam create-role \
+            --role-name $ROLE_NAME \
+            --assume-role-policy-document '{
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "ecs-tasks.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }]
+            }'
+        fi
+        
+        # Attach managed policy for ECS task execution
+        echo "📋 Attaching AWS managed policy..."
+        aws iam attach-role-policy \
+          --role-name $ROLE_NAME \
+          --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy || \
+          echo "Policy already attached or attach failed (may need manual setup)"
+        
+        # Allow some time for IAM to propagate
+        echo "⏳ Waiting for IAM changes to propagate..."
+        sleep 5
+        
+        echo "✅ ECS task execution role is ready: $ROLE_ARN"
+        
+        # Also ensure task role exists (for container AWS API access)
+        echo "🔧 Ensuring ECS task role exists..."
+        TASK_ROLE_NAME="ecsTaskRole"
+        TASK_ROLE_ARN="arn:aws:iam::669655810547:role/$TASK_ROLE_NAME"
+        
+        if aws iam get-role --role-name $TASK_ROLE_NAME &>/dev/null; then
+          echo "✅ Task role $TASK_ROLE_NAME already exists"
+        else
+          echo "🆕 Creating task role $TASK_ROLE_NAME..."
+          aws iam create-role \
+            --role-name $TASK_ROLE_NAME \
+            --assume-role-policy-document '{
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "ecs-tasks.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }]
+            }'
+          
+          # Attach S3 full access policy (for reading input and writing output)
+          echo "📋 Attaching S3 access policy to task role..."
+          aws iam attach-role-policy \
+            --role-name $TASK_ROLE_NAME \
+            --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess || \
+            echo "S3 policy attach failed (may need manual setup)"
+        fi
+        
+        echo "✅ ECS task role is ready: $TASK_ROLE_ARN"
+
     - name: Create dynamic task definition
       id: task-def
       run: |
@@ -99,6 +186,7 @@ jobs:
           "cpu": "2048",
           "memory": "4096",
           "executionRoleArn": "arn:aws:iam::669655810547:role/ecsTaskExecutionRole",
+          "taskRoleArn": "arn:aws:iam::669655810547:role/ecsTaskRole",
           "containerDefinitions": [
             {
               "name": "multimodal-transcription",
