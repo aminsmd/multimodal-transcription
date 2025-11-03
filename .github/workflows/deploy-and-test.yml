@@ -317,6 +317,18 @@ jobs:
                 {
                   "name": "AWS_DEFAULT_REGION",
                   "value": "${{ env.AWS_REGION }}"
+                },
+                {
+                  "name": "S3_BUCKET",
+                  "value": "${{ env.S3_BUCKET }}"
+                },
+                {
+                  "name": "S3_OUTPUT_PREFIX",
+                  "value": "${OUTPUT_PREFIX}"
+                },
+                {
+                  "name": "S3_VIDEO_PATH",
+                  "value": "${{ steps.video-path.outputs.video-path }}"
                 }
               ],
               "secrets": [
@@ -326,16 +338,9 @@ jobs:
                 }
               ],
               "command": [
-                "python",
-                "src/transcription_pipeline.py",
-                "--input",
-                "s3://${{ env.S3_BUCKET }}/${{ steps.video-path.outputs.video-path }}",
-                "--output-dir",
-                "s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX",
-                "--chunk-size",
-                "600",
-                "--max-workers",
-                "2"
+                "sh",
+                "-c",
+                "mkdir -p /tmp/video /tmp/outputs && VIDEO_FILENAME=$(basename \"$S3_VIDEO_PATH\") && aws s3 cp \"s3://$S3_BUCKET/$S3_VIDEO_PATH\" \"/tmp/video/$VIDEO_FILENAME\" && python src/transcription_pipeline.py --input \"/tmp/video/$VIDEO_FILENAME\" --output-dir /tmp/outputs --chunk-size 600 --max-workers 2 && aws s3 sync /tmp/outputs \"s3://$S3_BUCKET/$S3_OUTPUT_PREFIX\" --exclude '*.mp4' --exclude '*.mov' --exclude '*.avi' --exclude '*.mkv' --exclude '*.webm' --exclude '*.m4v' --exclude 'videos/*' --exclude 'chunks/*' --delete"
               ]
             }
           ]
