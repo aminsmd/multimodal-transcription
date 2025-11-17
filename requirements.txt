@@ -2,7 +2,7 @@ annotated-types==0.7.0
 anyio==4.10.0
 cachetools==5.5.2
 certifi==2025.8.3
-charset-normalizer==3.4.3
+charset-normalizer==3.4.4
 decorator==5.2.1
 google-auth==2.42.0
 google-genai==1.19.0
