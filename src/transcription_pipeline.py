@@ -44,6 +44,10 @@ def main():
                        help='Disable automatic file management (default: enabled)')
     parser.add_argument('--no-video-repository', action='store_true',
                        help='Disable video repository (database-like interface) (default: enabled)')
+    parser.add_argument('--enable-mongodb', action='store_true',
+                       help='Enable MongoDB storage for transcription results (default: disabled)')
+    parser.add_argument('--mongodb-database', type=str, default='multimodal_transcription',
+                       help='MongoDB database name (default: multimodal_transcription)')
     
     args = parser.parse_args()
     
@@ -59,12 +63,14 @@ def main():
             output_dir=args.output_dir
         )
         
-        # Initialize pipeline with file management and video repository
+        # Initialize pipeline with file management, video repository, and optional MongoDB
         pipeline = TranscriptionPipeline(
             base_dir=args.output_dir,
             data_dir=args.data_dir,
             enable_file_management=not args.no_file_management,
-            enable_video_repository=not args.no_video_repository
+            enable_video_repository=not args.no_video_repository,
+            enable_mongodb=args.enable_mongodb,
+            mongodb_database=args.mongodb_database
         )
         
         # Process video
@@ -76,6 +82,8 @@ def main():
         print(f"Pipeline runs directory: {pipeline.pipeline_runs_dir}")
         print(f"Run directory: {pipeline.run_dir}")
         print(f"Cached: {results.cached}")
+        if args.enable_mongodb:
+            print(f"MongoDB: Enabled (database: {args.mongodb_database})")
         
         # Clean up
         pipeline.cleanup()

@@ -25,6 +25,7 @@ from ai import GeminiClient, PromptManager, ModelHandler
 from storage import CacheManager, FileStorage, UploadManager, VideoRepository
 from utils import validate_video_file, get_video_duration
 from core.file_manager import create_file_manager
+from database import TranscriptionStorage
 
 
 class TranscriptionPipeline:
@@ -35,7 +36,7 @@ class TranscriptionPipeline:
     maintainable transcription pipeline.
     """
     
-    def __init__(self, base_dir: str = "outputs", data_dir: str = "data", enable_file_management: bool = True, enable_video_repository: bool = True, enable_validation: bool = True, gap_threshold_seconds: float = 10.0):
+    def __init__(self, base_dir: str = "outputs", data_dir: str = "data", enable_file_management: bool = True, enable_video_repository: bool = True, enable_validation: bool = True, gap_threshold_seconds: float = 10.0, enable_mongodb: bool = False, mongodb_database: str = "multimodal_transcription"):
         """
         Initialize the transcription pipeline.
         
@@ -46,6 +47,8 @@ class TranscriptionPipeline:
             enable_video_repository: Whether to enable video repository (database-like interface)
             enable_validation: Whether to enable transcript validation
             gap_threshold_seconds: Gap threshold for validation (seconds)
+            enable_mongodb: Whether to enable MongoDB storage for transcription results
+            mongodb_database: MongoDB database name (default: multimodal_transcription)
         """
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(exist_ok=True)
@@ -89,6 +92,24 @@ class TranscriptionPipeline:
             self.transcript_validator = TranscriptValidator(gap_threshold_seconds=gap_threshold_seconds)
             print(f"Transcript validation enabled with gap threshold: {gap_threshold_seconds}s")
         
+        # Initialize MongoDB storage if enabled
+        self.transcription_storage = None
+        self.enable_mongodb = enable_mongodb
+        if enable_mongodb:
+            try:
+                self.transcription_storage = TranscriptionStorage(database_name=mongodb_database)
+                if self.transcription_storage.connect():
+                    print(f"MongoDB storage enabled: {mongodb_database}")
+                else:
+                    print("⚠️ MongoDB connection failed, continuing without MongoDB storage")
+                    self.transcription_storage = None
+                    self.enable_mongodb = False
+            except Exception as e:
+                print(f"⚠️ MongoDB initialization failed: {e}")
+                print("Continuing without MongoDB storage")
+                self.transcription_storage = None
+                self.enable_mongodb = False
+        
         # Create run metadata
         self.run_metadata = {
             "run_id": self.run_id,
@@ -100,7 +121,9 @@ class TranscriptionPipeline:
             "video_repository_enabled": enable_video_repository,
             "validation_enabled": enable_validation,
             "gap_threshold_seconds": gap_threshold_seconds,
-            "runtime_tracking_enabled": True
+            "runtime_tracking_enabled": True,
+            "mongodb_enabled": self.enable_mongodb,
+            "mongodb_database": mongodb_database if self.enable_mongodb else None
         }
         
         print(f"Transcription pipeline run initialized: {self.run_id}")
@@ -378,6 +401,17 @@ class TranscriptionPipeline:
         # Step 8: Save pipeline results
         output_path = self.result_processor.save_pipeline_results(pipeline_results, video_id)
         
+        # Step 8.5: Save to MongoDB if enabled
+        mongodb_doc_id = None
+        if self.transcription_storage:
+            try:
+                print("\n=== Saving to MongoDB ===")
+                mongodb_doc_id = self.transcription_storage.save_transcription_result(pipeline_results.to_dict())
+                print(f"Saved to MongoDB with ID: {mongodb_doc_id}")
+            except Exception as e:
+                print(f"⚠️ Failed to save to MongoDB: {e}")
+                print("Continuing without MongoDB save")
+        
         # Step 9: Save transcript to global cache
         full_transcript_path = self.run_dir / 'transcripts' / f'{video_id}_full_transcript.json'
         self.cache_manager.save_transcript_cache(video_id, config_hash, str(full_transcript_path), config.to_dict())
@@ -438,6 +472,8 @@ class TranscriptionPipeline:
         print(f"  - Full Transcript (JSON): {self.run_dir / 'transcripts' / f'{video_id}_full_transcript.json'}")
         print(f"  - Full Transcript (Text): {self.run_dir / 'transcripts' / f'{video_id}_full_transcript.txt'}")
         print(f"  - Clean Transcript: {self.run_dir / 'transcripts' / f'{video_id}_clean_transcript.json'}")
+        if mongodb_doc_id:
+            print(f"  - MongoDB Document ID: {mongodb_doc_id}")
         
         return pipeline_results
     
@@ -492,5 +528,9 @@ class TranscriptionPipeline:
         
         # Clean up upload cache
         self.upload_manager.cleanup_upload_cache()
+        
+        # Disconnect from MongoDB if connected
+        if self.transcription_storage:
+            self.transcription_storage.disconnect()
         
         print("Pipeline cleanup completed")
