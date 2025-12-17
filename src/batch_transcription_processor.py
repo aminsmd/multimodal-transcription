@@ -94,26 +94,53 @@ class BatchTranscriptionProcessor:
         Returns:
             List of video dictionaries from the API
         """
-        logger.info("Fetching videos to transcribe from API...")
+        logger.info("=" * 70)
+        logger.info("FETCHING VIDEOS FROM API")
+        logger.info("=" * 70)
+        logger.info(f"API Endpoint: {self.video_fetcher.endpoint_url}")
+        
         try:
             result = self.video_fetcher.fetch_videos()
             
+            logger.info(f"API Response Status: {result.get('status_code', 'N/A')}")
+            logger.info(f"API Call Success: {result['success']}")
+            
             if not result['success']:
-                logger.error(f"Failed to fetch videos: {result['error']}")
+                logger.error(f"❌ Failed to fetch videos: {result['error']}")
                 logger.error(f"Response details: {result.get('response')}")
                 logger.error(f"Status code: {result.get('status_code')}")
+                print(f"\n❌ API FETCH FAILED: {result['error']}")
+                print(f"Status Code: {result.get('status_code', 'N/A')}")
                 # Don't fail the entire process if API fetch fails - just return empty list
                 return []
             
             videos = result['videos']
-            logger.info(f"Found {len(videos)} videos to transcribe")
+            logger.info(f"✅ Successfully fetched {len(videos)} videos from API")
+            print(f"\n✅ API FETCH SUCCESS: Found {len(videos)} videos")
             
             if videos:
-                logger.info(f"First video example: {videos[0] if isinstance(videos[0], dict) else 'string format'}")
+                logger.info("📋 Video List:")
+                print("\n📋 Videos to Process:")
+                for i, video in enumerate(videos[:10], 1):  # Show first 10
+                    if isinstance(video, dict):
+                        video_id = video.get('id', 'N/A')
+                        video_path = video.get('path', 'N/A')
+                        logger.info(f"  {i}. ID: {video_id}, Path: {video_path}")
+                        print(f"  {i}. ID: {video_id}")
+                        print(f"     Path: {video_path}")
+                    else:
+                        logger.info(f"  {i}. {video}")
+                        print(f"  {i}. {video}")
+                
+                if len(videos) > 10:
+                    logger.info(f"  ... and {len(videos) - 10} more videos")
+                    print(f"  ... and {len(videos) - 10} more videos")
             
+            logger.info("=" * 70)
             return videos
         except Exception as e:
             logger.error(f"Exception while fetching videos: {str(e)}", exc_info=True)
+            print(f"\n❌ EXCEPTION DURING API FETCH: {str(e)}")
             # Don't fail the entire process - return empty list
             return []
     
@@ -166,17 +193,23 @@ class BatchTranscriptionProcessor:
             video_id = Path(video_path).stem
         
         logger.info(f"Processing video: {video_id} (path: {video_path})")
+        print(f"\n🎬 Processing Video {video_id}")
+        print(f"   Path: {video_path}")
         
         # Construct full S3 URL using source bucket (for reading videos)
         s3_url = construct_s3_url(self.s3_source_bucket_name, video_path)
         logger.info(f"S3 source URL (for downloading): {s3_url}")
+        print(f"   S3 URL: {s3_url}")
         
         # Download video from S3
+        print(f"   ⬇️  Downloading from S3...")
+        logger.info(f"Starting S3 download for {video_id}...")
         local_video_path, download_success = download_video_from_s3(s3_url)
         
         if not download_success:
             error_msg = f"Failed to download video from S3: {s3_url}"
             logger.error(error_msg)
+            print(f"   ❌ DOWNLOAD FAILED: {error_msg}")
             
             # Send error notification
             notification_result = self.notification_client.notify_error(
@@ -185,13 +218,26 @@ class BatchTranscriptionProcessor:
                 output_directory=str(self.pipeline.run_dir)
             )
             logger.info(f"Notification sent: {notification_result}")
+            print(f"   📤 Notification sent: {'✅' if notification_result['success'] else '❌'}")
             
             return {
                 'success': False,
                 'video_id': video_id,
                 'error': error_msg,
+                'download_status': 'failed',
                 'notification_sent': notification_result['success']
             }
+        
+        # Log download success with file size
+        try:
+            import os
+            file_size = os.path.getsize(local_video_path)
+            file_size_mb = file_size / (1024 * 1024)
+            logger.info(f"✅ Successfully downloaded {video_id}: {file_size_mb:.2f} MB")
+            print(f"   ✅ DOWNLOAD SUCCESS: {file_size_mb:.2f} MB")
+        except Exception:
+            logger.info(f"✅ Successfully downloaded {video_id}")
+            print(f"   ✅ DOWNLOAD SUCCESS")
         
         # Process video through transcription pipeline
         try:
@@ -210,6 +256,8 @@ class BatchTranscriptionProcessor:
             logger.info(f"✅ Successfully transcribed {video_id}")
             logger.info(f"Transcript entries: {len(results.full_transcript.transcript)}")
             logger.info(f"Output directory: {self.pipeline.run_dir}")
+            print(f"   ✅ TRANSCRIPTION SUCCESS: {len(results.full_transcript.transcript)} entries")
+            print(f"   📁 Output: {self.pipeline.run_dir}")
             
             # Send success notification
             notification_result = self.notification_client.notify_success(
@@ -217,6 +265,7 @@ class BatchTranscriptionProcessor:
                 output_directory=str(self.pipeline.run_dir)
             )
             logger.info(f"Notification sent: {notification_result}")
+            print(f"   📤 Notification sent: {'✅' if notification_result['success'] else '❌'}")
             
             # Clean up downloaded video file
             try:
@@ -231,6 +280,7 @@ class BatchTranscriptionProcessor:
                 'video_id': video_id,
                 'transcript_entries': len(results.full_transcript.transcript),
                 'output_directory': str(self.pipeline.run_dir),
+                'download_status': 'success',
                 'notification_sent': notification_result['success'],
                 'notification_response': notification_result.get('response')
             }
@@ -258,6 +308,7 @@ class BatchTranscriptionProcessor:
                 'success': False,
                 'video_id': video_id,
                 'error': error_msg,
+                'download_status': 'success' if 'local_video_path' in locals() else 'failed',
                 'notification_sent': notification_result['success']
             }
     
@@ -273,10 +324,14 @@ class BatchTranscriptionProcessor:
         logger.info("=" * 70)
         
         # Fetch videos
+        print("\n" + "=" * 70)
+        print("STEP 1: FETCHING VIDEOS FROM API")
+        print("=" * 70)
         try:
             logger.info("Attempting to fetch videos from API...")
             videos = self.fetch_videos_to_transcribe()
             logger.info(f"Video fetch completed. Found {len(videos)} videos.")
+            print(f"\n📊 API FETCH SUMMARY: {len(videos)} videos found")
         except Exception as e:
             logger.error(f"Exception occurred while fetching videos: {str(e)}", exc_info=True)
             logger.error(f"Exception type: {type(e).__name__}")
@@ -318,22 +373,37 @@ class BatchTranscriptionProcessor:
         succeeded = 0
         failed = 0
         
+        print("\n" + "=" * 70)
+        print(f"STEP 2: PROCESSING {total_videos} VIDEOS")
+        print("=" * 70)
         logger.info(f"Processing {total_videos} videos...")
         
         for i, video_info in enumerate(videos, 1):
             logger.info(f"\n{'=' * 70}")
             logger.info(f"Processing video {i}/{total_videos}")
             logger.info(f"{'=' * 70}")
+            print(f"\n[{i}/{total_videos}] Processing video...")
             
             result = self.process_video(video_info)
             self.processed_videos.append(result)
             
+            # Print summary for this video
             if result['success']:
                 succeeded += 1
+                print(f"   ✅ Video {i} completed successfully")
             else:
                 failed += 1
+                print(f"   ❌ Video {i} failed: {result.get('error', 'Unknown error')}")
+            
+            # Print download status if available
+            if 'download_status' in result:
+                status_emoji = '✅' if result['download_status'] == 'success' else '❌'
+                print(f"   Download: {status_emoji} {result['download_status']}")
         
         # Summary
+        print("\n" + "=" * 70)
+        print("STEP 3: BATCH PROCESSING SUMMARY")
+        print("=" * 70)
         logger.info("\n" + "=" * 70)
         logger.info("Batch processing completed")
         logger.info("=" * 70)
@@ -341,6 +411,28 @@ class BatchTranscriptionProcessor:
         logger.info(f"Succeeded: {succeeded}")
         logger.info(f"Failed: {failed}")
         logger.info(f"Output directory: {self.pipeline.run_dir}")
+        
+        print(f"\n📊 FINAL RESULTS:")
+        print(f"   Total videos: {total_videos}")
+        print(f"   ✅ Succeeded: {succeeded}")
+        print(f"   ❌ Failed: {failed}")
+        print(f"   📁 Output directory: {self.pipeline.run_dir}")
+        
+        # Show download status summary
+        download_successes = sum(1 for r in self.processed_videos if r.get('download_status') == 'success')
+        download_failures = sum(1 for r in self.processed_videos if r.get('download_status') == 'failed')
+        if download_successes + download_failures > 0:
+            print(f"\n📥 DOWNLOAD STATUS:")
+            print(f"   ✅ Successful downloads: {download_successes}")
+            print(f"   ❌ Failed downloads: {download_failures}")
+        
+        # Show notification status summary
+        notifications_sent = sum(1 for r in self.processed_videos if r.get('notification_sent'))
+        notifications_failed = sum(1 for r in self.processed_videos if not r.get('notification_sent', True))
+        if notifications_sent + notifications_failed > 0:
+            print(f"\n📤 NOTIFICATION STATUS:")
+            print(f"   ✅ Sent: {notifications_sent}")
+            print(f"   ❌ Failed: {notifications_failed}")
         
         # Create summary file
         import json
