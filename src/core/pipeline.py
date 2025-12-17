@@ -308,6 +308,48 @@ class TranscriptionPipeline:
             chunks_metadata, video_id, config.max_workers
         )
         
+        # Check for failed chunks and send notification if any
+        failed_chunks = []
+        for chunk_data in transcript_analysis.get('chunks', []):
+            chunk_result = chunk_data.get('transcript', {})
+            if chunk_result.get('error'):
+                chunk_info = chunk_data.get('chunk_info', {})
+                failed_chunks.append({
+                    'start_time': chunk_info.get('start_time', 0),
+                    'end_time': chunk_info.get('end_time', 0),
+                    'error': chunk_result.get('error', 'Unknown error')
+                })
+        
+        # Send notification for failed chunks if any
+        if failed_chunks:
+            error_summary = f"Failed to transcribe {len(failed_chunks)} chunk(s) after retries. "
+            error_details = []
+            for i, failed_chunk in enumerate(failed_chunks[:5], 1):  # Limit to first 5 for brevity
+                error_details.append(
+                    f"Chunk {failed_chunk['start_time']}-{failed_chunk['end_time']}s: {failed_chunk['error'][:100]}"
+                )
+            if len(failed_chunks) > 5:
+                error_details.append(f"... and {len(failed_chunks) - 5} more chunk(s) failed")
+            
+            error_message = error_summary + " | ".join(error_details)
+            print(f"\n⚠️  Warning: {error_message}")
+            
+            # Try to send notification if notification client is available
+            try:
+                from api.notification_client import NotificationClient
+                notification_client = NotificationClient()
+                notification_result = notification_client.notify_error(
+                    video_id,
+                    error_message,
+                    output_directory=str(self.run_dir)
+                )
+                if notification_result.get('success'):
+                    print(f"📤 Notification sent for {len(failed_chunks)} failed chunk(s)")
+                else:
+                    print(f"⚠️  Failed to send notification: {notification_result.get('error')}")
+            except Exception as e:
+                print(f"⚠️  Could not send notification for failed chunks: {str(e)}")
+        
         # Step 5: Create full transcript
         full_transcript = self.transcript_combiner.create_full_transcript(
             transcript_analysis, video_id, self._current_config
