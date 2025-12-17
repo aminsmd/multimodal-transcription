@@ -36,7 +36,8 @@ COPY . .
 RUN mkdir -p /app/outputs /app/data /app/logs
 
 # Set permissions
-RUN chmod +x /app/src/transcription_pipeline.py
+RUN chmod +x /app/src/transcription_pipeline.py && \
+    chmod +x /app/src/process_single_video.py
 
 # Create a non-root user for security
 RUN useradd --create-home --shell /bin/bash appuser && \
