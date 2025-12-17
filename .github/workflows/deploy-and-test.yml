@@ -12,7 +12,7 @@ on:
           - single
           - batch
       video:
-        description: 'Video to test (only for single mode)'
+        description: 'Video to test (only for single mode - test videos)'
         required: false
         default: 'adam'
         type: choice
@@ -20,6 +20,14 @@ on:
           - adam
           - angela
           - audrey
+      video_path:
+        description: 'Custom video path (e.g., 68dc488aac9091f3e8574f6f/video.mp4) - overrides video choice'
+        required: false
+        type: string
+      video_id:
+        description: 'Video ID (optional, used for naming output)'
+        required: false
+        type: string
 
 env:
   AWS_REGION: us-east-2
@@ -59,22 +67,50 @@ jobs:
           echo "🔄 Batch processing mode enabled"
           echo "video-name=batch" >> $GITHUB_OUTPUT
           echo "video-path=" >> $GITHUB_OUTPUT
+          echo "use-custom-path=false" >> $GITHUB_OUTPUT
         else
           echo "🎬 Single video mode"
-          case "${{ github.event.inputs.video || 'adam' }}" in
-            "adam")
-              echo "video-path=test-videos/Adam_2024-03-03_6_32_PM.mp4" >> $GITHUB_OUTPUT
-              echo "video-name=Adam" >> $GITHUB_OUTPUT
-              ;;
-            "angela")
-              echo "video-path=test-videos/Angela_2025-03-10_2_11_PM.mp4" >> $GITHUB_OUTPUT
-              echo "video-name=Angela" >> $GITHUB_OUTPUT
-              ;;
-            "audrey")
-              echo "video-path=test-videos/Audrey_2025-04-06_6_20_PM-2.mp4" >> $GITHUB_OUTPUT
-              echo "video-name=Audrey" >> $GITHUB_OUTPUT
-              ;;
-          esac
+          
+          # Check if custom video_path is provided
+          CUSTOM_VIDEO_PATH="${{ github.event.inputs.video_path }}"
+          CUSTOM_VIDEO_ID="${{ github.event.inputs.video_id }}"
+          
+          if [ -n "$CUSTOM_VIDEO_PATH" ]; then
+            echo "📹 Using custom video path: $CUSTOM_VIDEO_PATH"
+            echo "video-path=$CUSTOM_VIDEO_PATH" >> $GITHUB_OUTPUT
+            echo "use-custom-path=true" >> $GITHUB_OUTPUT
+            
+            # Use provided video_id or extract from path
+            if [ -n "$CUSTOM_VIDEO_ID" ]; then
+              echo "video-id=$CUSTOM_VIDEO_ID" >> $GITHUB_OUTPUT
+              echo "video-name=$CUSTOM_VIDEO_ID" >> $GITHUB_OUTPUT
+            else
+              # Extract video ID from path (first part before /)
+              VIDEO_ID_FROM_PATH=$(echo "$CUSTOM_VIDEO_PATH" | cut -d'/' -f1)
+              echo "video-id=$VIDEO_ID_FROM_PATH" >> $GITHUB_OUTPUT
+              echo "video-name=$VIDEO_ID_FROM_PATH" >> $GITHUB_OUTPUT
+            fi
+          else
+            # Use test video selection
+            echo "use-custom-path=false" >> $GITHUB_OUTPUT
+            case "${{ github.event.inputs.video || 'adam' }}" in
+              "adam")
+                echo "video-path=test-videos/Adam_2024-03-03_6_32_PM.mp4" >> $GITHUB_OUTPUT
+                echo "video-name=Adam" >> $GITHUB_OUTPUT
+                echo "video-id=Adam" >> $GITHUB_OUTPUT
+                ;;
+              "angela")
+                echo "video-path=test-videos/Angela_2025-03-10_2_11_PM.mp4" >> $GITHUB_OUTPUT
+                echo "video-name=Angela" >> $GITHUB_OUTPUT
+                echo "video-id=Angela" >> $GITHUB_OUTPUT
+                ;;
+              "audrey")
+                echo "video-path=test-videos/Audrey_2025-04-06_6_20_PM-2.mp4" >> $GITHUB_OUTPUT
+                echo "video-name=Audrey" >> $GITHUB_OUTPUT
+                echo "video-id=Audrey" >> $GITHUB_OUTPUT
+                ;;
+            esac
+          fi
         fi
 
     - name: Fetch videos from API (batch mode only)
@@ -585,67 +621,148 @@ jobs:
       if: steps.video-path.outputs.mode != 'batch'
       run: |
         TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-        OUTPUT_PREFIX="test-outputs/${{ steps.video-path.outputs.video-name }}-$TIMESTAMP"
-        echo "🎬 Testing video: ${{ steps.video-path.outputs.video-name }}"
+        USE_CUSTOM_PATH="${{ steps.video-path.outputs.use-custom-path }}"
+        VIDEO_ID="${{ steps.video-path.outputs.video-id }}"
+        VIDEO_PATH="${{ steps.video-path.outputs.video-path }}"
+        
+        if [ "$USE_CUSTOM_PATH" = "true" ]; then
+          OUTPUT_PREFIX="single-outputs/$VIDEO_ID-$TIMESTAMP"
+          echo "🎬 Processing custom video: $VIDEO_ID"
+          echo "📹 Video path: $VIDEO_PATH"
+        else
+          OUTPUT_PREFIX="test-outputs/${{ steps.video-path.outputs.video-name }}-$TIMESTAMP"
+          echo "🎬 Testing video: ${{ steps.video-path.outputs.video-name }}"
+        fi
+        
         echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
         echo "🔑 Using secret ARN: ${{ steps.secret-arn.outputs.secret-arn }}"
         
-        # Build command string for single video processing
-        CMD_STRING='mkdir -p /tmp/video /tmp/outputs && VIDEO_FILENAME=$(basename "$S3_VIDEO_PATH") && aws s3 cp "s3://$S3_BUCKET/$S3_VIDEO_PATH" "/tmp/video/$VIDEO_FILENAME" && python src/transcription_pipeline.py --input "/tmp/video/$VIDEO_FILENAME" --output-dir /tmp/outputs --chunk-size 600 --max-workers 2 && aws s3 sync /tmp/outputs "s3://$S3_BUCKET/$S3_OUTPUT_PREFIX" --exclude '"'"'*.mp4'"'"' --exclude '"'"'*.mov'"'"' --exclude '"'"'*.avi'"'"' --exclude '"'"'*.mkv'"'"' --exclude '"'"'*.webm'"'"' --exclude '"'"'*.m4v'"'"' --exclude '"'"'videos/*'"'"' --exclude '"'"'chunks/*'"'"' --delete'
+        # Get S3 source bucket from secret (for custom paths)
+        S3_SOURCE_BUCKET="${{ secrets.S3_BUCKET_PATH }}"
+        if [ -z "$S3_SOURCE_BUCKET" ]; then
+          S3_SOURCE_BUCKET="${{ env.S3_BUCKET }}"
+        fi
+        # Extract bucket name if it's a URL
+        S3_SOURCE_BUCKET=$(echo "$S3_SOURCE_BUCKET" | sed 's|.*/buckets/||' | sed 's|?.*||' | sed 's|s3://||' | sed 's|/.*||')
         
-        # Get S3_BUCKET_PATH from secrets
+        S3_DEST_BUCKET="${{ env.S3_BUCKET }}"
+        
+        # Build command string based on whether using custom path or test video
+        if [ "$USE_CUSTOM_PATH" = "true" ]; then
+          # Use process_single_video.py for custom paths (like batch mode)
+          CMD_STRING='python src/process_single_video.py'
+        else
+          # Use transcription_pipeline.py for test videos (existing behavior)
+          CMD_STRING='mkdir -p /tmp/video /tmp/outputs && VIDEO_FILENAME=$(basename "$S3_VIDEO_PATH") && aws s3 cp "s3://$S3_BUCKET/$S3_VIDEO_PATH" "/tmp/video/$VIDEO_FILENAME" && python src/transcription_pipeline.py --input "/tmp/video/$VIDEO_FILENAME" --output-dir /tmp/outputs --chunk-size 600 --max-workers 2 && aws s3 sync /tmp/outputs "s3://$S3_BUCKET/$S3_OUTPUT_PREFIX" --exclude '"'"'*.mp4'"'"' --exclude '"'"'*.mov'"'"' --exclude '"'"'*.avi'"'"' --exclude '"'"'*.mkv'"'"' --exclude '"'"'*.webm'"'"' --exclude '"'"'*.m4v'"'"' --exclude '"'"'videos/*'"'"' --exclude '"'"'chunks/*'"'"' --delete'
+        fi
+        
+        # Get S3_BUCKET_PATH from secrets (for backward compatibility)
         S3_BUCKET_PATH_VALUE="${{ secrets.S3_BUCKET_PATH }}"
         if [ -z "$S3_BUCKET_PATH_VALUE" ]; then
           S3_BUCKET_PATH_VALUE="s3://${{ env.S3_BUCKET }}"
         fi
         
         # Create task definition using jq for proper JSON escaping
-        jq -n \
-          --arg family "multimodal-transcription-test-$(date +%s)" \
-          --arg image "${{ steps.build-image.outputs.image-uri }}" \
-          --arg aws_region "${{ env.AWS_REGION }}" \
-          --arg s3_bucket "${{ env.S3_BUCKET }}" \
-          --arg output_prefix "${OUTPUT_PREFIX}" \
-          --arg video_path "${{ steps.video-path.outputs.video-path }}" \
-          --arg s3_bucket_path "$S3_BUCKET_PATH_VALUE" \
-          --arg secret_arn "${{ steps.secret-arn.outputs.secret-arn }}" \
-          --arg cmd_string "$CMD_STRING" \
-          '{
-            "family": $family,
-            "networkMode": "awsvpc",
-            "requiresCompatibilities": ["FARGATE"],
-            "cpu": "2048",
-            "memory": "4096",
-            "executionRoleArn": "arn:aws:iam::669655810547:role/ecsTaskExecutionRole",
-            "taskRoleArn": "arn:aws:iam::669655810547:role/ecsTaskRole",
-            "containerDefinitions": [
-              {
-                "name": "multimodal-transcription",
-                "image": $image,
-                "essential": true,
-                "logConfiguration": {
-                  "logDriver": "awslogs",
-                  "options": {
-                    "awslogs-group": "/ecs/multimodal-transcription-test",
-                    "awslogs-region": $aws_region,
-                    "awslogs-stream-prefix": "ecs"
-                  }
-                },
-                "environment": [
-                  {"name": "PYTHONUNBUFFERED", "value": "1"},
-                  {"name": "AWS_DEFAULT_REGION", "value": $aws_region},
-                  {"name": "S3_BUCKET", "value": $s3_bucket},
-                  {"name": "S3_OUTPUT_PREFIX", "value": $output_prefix},
-                  {"name": "S3_VIDEO_PATH", "value": $video_path},
-                  {"name": "S3_BUCKET_PATH", "value": $s3_bucket_path}
-                ],
-                "secrets": [
-                  {"name": "GOOGLE_API_KEY", "valueFrom": $secret_arn}
-                ],
-                "command": ["sh", "-c", $cmd_string]
-              }
-            ]
-          }' > temp-task-definition.json
+        if [ "$USE_CUSTOM_PATH" = "true" ]; then
+          # Custom path mode - use process_single_video.py with environment variables
+          jq -n \
+            --arg family "multimodal-transcription-test-$(date +%s)" \
+            --arg image "${{ steps.build-image.outputs.image-uri }}" \
+            --arg aws_region "${{ env.AWS_REGION }}" \
+            --arg s3_dest_bucket "$S3_DEST_BUCKET" \
+            --arg output_prefix "${OUTPUT_PREFIX}" \
+            --arg video_id "$VIDEO_ID" \
+            --arg video_path "$VIDEO_PATH" \
+            --arg s3_source_bucket "$S3_SOURCE_BUCKET" \
+            --arg secret_arn "${{ steps.secret-arn.outputs.secret-arn }}" \
+            '{
+              "family": $family,
+              "networkMode": "awsvpc",
+              "requiresCompatibilities": ["FARGATE"],
+              "cpu": "2048",
+              "memory": "4096",
+              "executionRoleArn": "arn:aws:iam::669655810547:role/ecsTaskExecutionRole",
+              "taskRoleArn": "arn:aws:iam::669655810547:role/ecsTaskRole",
+              "containerDefinitions": [
+                {
+                  "name": "multimodal-transcription",
+                  "image": $image,
+                  "essential": true,
+                  "logConfiguration": {
+                    "logDriver": "awslogs",
+                    "options": {
+                      "awslogs-group": "/ecs/multimodal-transcription-test",
+                      "awslogs-region": $aws_region,
+                      "awslogs-stream-prefix": "ecs"
+                    }
+                  },
+                  "environment": [
+                    {"name": "PYTHONUNBUFFERED", "value": "1"},
+                    {"name": "AWS_DEFAULT_REGION", "value": $aws_region},
+                    {"name": "VIDEO_ID", "value": $video_id},
+                    {"name": "VIDEO_PATH", "value": $video_path},
+                    {"name": "S3_SOURCE_BUCKET", "value": $s3_source_bucket},
+                    {"name": "S3_DEST_BUCKET", "value": $s3_dest_bucket},
+                    {"name": "S3_OUTPUT_PREFIX", "value": $output_prefix},
+                    {"name": "CHUNK_SIZE", "value": "600"},
+                    {"name": "MAX_WORKERS", "value": "2"}
+                  ],
+                  "secrets": [
+                    {"name": "GOOGLE_API_KEY", "valueFrom": $secret_arn}
+                  ],
+                  "command": ["python", "src/process_single_video.py"]
+                }
+              ]
+            }' > temp-task-definition.json
+        else
+          # Test video mode - use transcription_pipeline.py (existing behavior)
+          jq -n \
+            --arg family "multimodal-transcription-test-$(date +%s)" \
+            --arg image "${{ steps.build-image.outputs.image-uri }}" \
+            --arg aws_region "${{ env.AWS_REGION }}" \
+            --arg s3_bucket "${{ env.S3_BUCKET }}" \
+            --arg output_prefix "${OUTPUT_PREFIX}" \
+            --arg video_path "${{ steps.video-path.outputs.video-path }}" \
+            --arg s3_bucket_path "$S3_BUCKET_PATH_VALUE" \
+            --arg secret_arn "${{ steps.secret-arn.outputs.secret-arn }}" \
+            --arg cmd_string "$CMD_STRING" \
+            '{
+              "family": $family,
+              "networkMode": "awsvpc",
+              "requiresCompatibilities": ["FARGATE"],
+              "cpu": "2048",
+              "memory": "4096",
+              "executionRoleArn": "arn:aws:iam::669655810547:role/ecsTaskExecutionRole",
+              "taskRoleArn": "arn:aws:iam::669655810547:role/ecsTaskRole",
+              "containerDefinitions": [
+                {
+                  "name": "multimodal-transcription",
+                  "image": $image,
+                  "essential": true,
+                  "logConfiguration": {
+                    "logDriver": "awslogs",
+                    "options": {
+                      "awslogs-group": "/ecs/multimodal-transcription-test",
+                      "awslogs-region": $aws_region,
+                      "awslogs-stream-prefix": "ecs"
+                    }
+                  },
+                  "environment": [
+                    {"name": "PYTHONUNBUFFERED", "value": "1"},
+                    {"name": "AWS_DEFAULT_REGION", "value": $aws_region},
+                    {"name": "S3_BUCKET", "value": $s3_bucket},
+                    {"name": "S3_OUTPUT_PREFIX", "value": $output_prefix},
+                    {"name": "S3_VIDEO_PATH", "value": $video_path},
+                    {"name": "S3_BUCKET_PATH", "value": $s3_bucket_path}
+                  ],
+                  "secrets": [
+                    {"name": "GOOGLE_API_KEY", "valueFrom": $secret_arn}
+                  ],
+                  "command": ["sh", "-c", $cmd_string]
+                }
+              ]
+            }' > temp-task-definition.json
+        fi
         
         # Validate JSON was created successfully
         if [ ! -s temp-task-definition.json ]; then
