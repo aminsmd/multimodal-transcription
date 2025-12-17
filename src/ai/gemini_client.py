@@ -46,7 +46,33 @@ class GeminiClient:
         
         return genai.Client(api_key=api_key)
     
-    def analyze_chunk_direct(self, chunk_path: str, prompt: str, raw_response_dir: str = None) -> Dict[str, Any]:
+    def _is_retryable_error(self, error: Exception) -> bool:
+        """
+        Check if an error is retryable (transient).
+        
+        Args:
+            error: Exception to check
+            
+        Returns:
+            True if error is retryable, False otherwise
+        """
+        error_str = str(error).upper()
+        # Check for retryable error patterns
+        retryable_patterns = [
+            '500',
+            'INTERNAL',
+            'SERVICE UNAVAILABLE',
+            'TIMEOUT',
+            'RATE LIMIT',
+            'QUOTA',
+            'TOO MANY REQUESTS',
+            '503',
+            '502',
+            '504'
+        ]
+        return any(pattern in error_str for pattern in retryable_patterns)
+    
+    def analyze_chunk_direct(self, chunk_path: str, prompt: str, raw_response_dir: str = None, max_retries: int = 3) -> Dict[str, Any]:
         """
         Analyze a chunk using direct bytes (for smaller files).
         
@@ -54,36 +80,57 @@ class GeminiClient:
             chunk_path: Path to the video chunk
             prompt: Prompt for transcription
             raw_response_dir: Directory to save raw API responses for debugging
+            max_retries: Maximum number of retry attempts for transient errors
             
         Returns:
             Dictionary containing analysis results
         """
-        try:
-            with open(chunk_path, 'rb') as f:
-                chunk_data = f.read()
-            
-            response = self.client.models.generate_content(
-                model=f'models/{self.model.value}',
-                contents=types.Content(
-                    parts=[
-                        types.Part(
-                            inline_data=types.Blob(data=chunk_data, mime_type='video/mp4')
-                        ),
-                        types.Part(text=prompt)
-                    ]
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                with open(chunk_path, 'rb') as f:
+                    chunk_data = f.read()
+                
+                response = self.client.models.generate_content(
+                    model=f'models/{self.model.value}',
+                    contents=types.Content(
+                        parts=[
+                            types.Part(
+                                inline_data=types.Blob(data=chunk_data, mime_type='video/mp4')
+                            ),
+                            types.Part(text=prompt)
+                        ]
+                    )
                 )
-            )
-            
-            # Save raw response if directory is provided
-            if raw_response_dir:
-                self._save_raw_response(response.text, chunk_path, raw_response_dir)
-            
-            return self._parse_response(response.text)
-            
-        except Exception as e:
-            return {"transcript": [], "error": str(e)}
+                
+                # Save raw response if directory is provided
+                if raw_response_dir:
+                    self._save_raw_response(response.text, chunk_path, raw_response_dir)
+                
+                return self._parse_response(response.text)
+                
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
+                
+                # Check if error is retryable
+                if self._is_retryable_error(e) and attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) + (time.time() % 1)  # Exponential backoff with jitter
+                    print(f"⚠️  Retryable error on attempt {attempt + 1}/{max_retries}: {error_str[:100]}")
+                    print(f"   Retrying in {wait_time:.1f} seconds...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # Non-retryable error or max retries reached
+                    if attempt == max_retries - 1:
+                        print(f"❌ Failed after {max_retries} attempts: {error_str[:200]}")
+                    return {"transcript": [], "error": error_str}
+        
+        # Should not reach here, but return error if we do
+        return {"transcript": [], "error": str(last_error) if last_error else "Unknown error"}
     
-    def analyze_chunk_upload(self, chunk_path: str, prompt: str, raw_response_dir: str = None) -> Dict[str, Any]:
+    def analyze_chunk_upload(self, chunk_path: str, prompt: str, raw_response_dir: str = None, max_retries: int = 3) -> Dict[str, Any]:
         """
         Analyze a chunk using file upload (for larger files).
         
@@ -91,28 +138,49 @@ class GeminiClient:
             chunk_path: Path to the video chunk
             prompt: Prompt for transcription
             raw_response_dir: Directory to save raw API responses for debugging
+            max_retries: Maximum number of retry attempts for transient errors
             
         Returns:
             Dictionary containing analysis results
         """
-        try:
-            uploaded_file = self._get_or_upload_file(chunk_path)
-            response = self.client.models.generate_content(
-                model=f'models/{self.model.value}',
-                contents=[
-                    uploaded_file,
-                    prompt
-                ]
-            )
-            
-            # Save raw response if directory is provided
-            if raw_response_dir:
-                self._save_raw_response(response.text, chunk_path, raw_response_dir)
-            
-            return self._parse_response(response.text)
-            
-        except Exception as e:
-            return {"transcript": [], "error": str(e)}
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                uploaded_file = self._get_or_upload_file(chunk_path)
+                response = self.client.models.generate_content(
+                    model=f'models/{self.model.value}',
+                    contents=[
+                        uploaded_file,
+                        prompt
+                    ]
+                )
+                
+                # Save raw response if directory is provided
+                if raw_response_dir:
+                    self._save_raw_response(response.text, chunk_path, raw_response_dir)
+                
+                return self._parse_response(response.text)
+                
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
+                
+                # Check if error is retryable
+                if self._is_retryable_error(e) and attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) + (time.time() % 1)  # Exponential backoff with jitter
+                    print(f"⚠️  Retryable error on attempt {attempt + 1}/{max_retries}: {error_str[:100]}")
+                    print(f"   Retrying in {wait_time:.1f} seconds...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # Non-retryable error or max retries reached
+                    if attempt == max_retries - 1:
+                        print(f"❌ Failed after {max_retries} attempts: {error_str[:200]}")
+                    return {"transcript": [], "error": error_str}
+        
+        # Should not reach here, but return error if we do
+        return {"transcript": [], "error": str(last_error) if last_error else "Unknown error"}
     
     def _get_or_upload_file(self, file_path: str):
         """Get or upload file to Gemini."""
