@@ -409,10 +409,65 @@ jobs:
         echo "✅ ECS task started: $TASK_ARN"
         
         # Wait for task to complete
+        # Note: aws ecs wait tasks-stopped has a default timeout of 40 attempts (20 minutes)
+        # For batch processing with multiple videos, this might take much longer
         echo "⏳ Waiting for task to complete..."
-        aws ecs wait tasks-stopped \
-          --cluster ${{ env.ECS_CLUSTER }} \
-          --tasks $TASK_ARN
+        
+        # Check mode to determine timeout
+        MODE="${{ steps.video-path.outputs.mode }}"
+        if [ "$MODE" = "batch" ]; then
+          echo "   Batch mode: Processing may take 1-3 hours depending on number of videos"
+          echo "   Using extended timeout (up to 3 hours)"
+          # Wait with longer timeout - 360 attempts = 3 hours (30 second intervals)
+          # Use a polling loop instead of wait command for better control
+          MAX_WAIT_SECONDS=10800  # 3 hours
+          POLL_INTERVAL=30        # Check every 30 seconds
+          ELAPSED=0
+          
+          while [ $ELAPSED -lt $MAX_WAIT_SECONDS ]; do
+            CURRENT_STATUS=$(aws ecs describe-tasks \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --tasks $TASK_ARN \
+              --query 'tasks[0].lastStatus' \
+              --output text 2>/dev/null || echo "UNKNOWN")
+            
+            if [ "$CURRENT_STATUS" = "STOPPED" ]; then
+              echo "✅ Task has stopped"
+              break
+            fi
+            
+            if [ "$CURRENT_STATUS" = "RUNNING" ]; then
+              ELAPSED_MINUTES=$((ELAPSED / 60))
+              echo "   Task still running... (${ELAPSED_MINUTES} minutes elapsed)"
+            fi
+            
+            sleep $POLL_INTERVAL
+            ELAPSED=$((ELAPSED + POLL_INTERVAL))
+          done
+          
+          # Final status check
+          FINAL_STATUS=$(aws ecs describe-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks $TASK_ARN \
+            --query 'tasks[0].lastStatus' \
+            --output text 2>/dev/null || echo "UNKNOWN")
+          
+          if [ "$FINAL_STATUS" != "STOPPED" ]; then
+            echo "⚠️ Wait timeout reached after ${MAX_WAIT_SECONDS} seconds"
+            echo "Current task status: $FINAL_STATUS"
+            if [ "$FINAL_STATUS" = "RUNNING" ]; then
+              echo "Task is still running. Check CloudWatch logs for progress."
+              echo "You can check task status manually with:"
+              echo "  aws ecs describe-tasks --cluster ${{ env.ECS_CLUSTER }} --tasks $TASK_ARN"
+            fi
+          fi
+        else
+          # Single video mode - use default timeout
+          echo "   Single video mode: Should complete within 20 minutes"
+          aws ecs wait tasks-stopped \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks $TASK_ARN
+        fi
         
         # Get task status and details
         TASK_STATUS=$(aws ecs describe-tasks \
