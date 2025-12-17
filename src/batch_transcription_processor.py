@@ -73,11 +73,15 @@ class BatchTranscriptionProcessor:
         logger.info(f"S3 source bucket (for reading videos): {self.s3_source_bucket_name}")
         
         # Initialize pipeline
+        # Disable video repository and MongoDB - we don't need database/file tracking for batch processing
+        # Results are uploaded to S3 and notifications are sent via API
         self.pipeline = TranscriptionPipeline(
             base_dir=output_dir,
             data_dir=data_dir,
             enable_file_management=enable_file_management,
-            enable_validation=enable_validation
+            enable_video_repository=False,  # Disable - not needed for batch processing
+            enable_validation=enable_validation,
+            enable_mongodb=False  # Disable - not needed for batch processing
         )
         
         self.output_dir = output_dir
