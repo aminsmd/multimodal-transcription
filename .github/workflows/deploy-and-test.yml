@@ -1,16 +1,19 @@
 name: Deploy and Test
 
 on:
-  push:
-    branches:
-      - test-workflow
-      - test
-      - workflow-test
   workflow_dispatch:
     inputs:
-      video:
-        description: 'Video to test'
+      mode:
+        description: 'Processing mode'
         required: true
+        default: 'single'
+        type: choice
+        options:
+          - single
+          - batch
+      video:
+        description: 'Video to test (only for single mode)'
+        required: false
         default: 'adam'
         type: choice
         options:
@@ -46,23 +49,33 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Set video path
+    - name: Set video path or batch mode
       id: video-path
       run: |
-        case "${{ github.event.inputs.video || 'adam' }}" in
-          "adam")
-            echo "video-path=test-videos/Adam_2024-03-03_6_32_PM.mp4" >> $GITHUB_OUTPUT
-            echo "video-name=Adam" >> $GITHUB_OUTPUT
-            ;;
-          "angela")
-            echo "video-path=test-videos/Angela_2025-03-10_2_11_PM.mp4" >> $GITHUB_OUTPUT
-            echo "video-name=Angela" >> $GITHUB_OUTPUT
-            ;;
-          "audrey")
-            echo "video-path=test-videos/Audrey_2025-04-06_6_20_PM-2.mp4" >> $GITHUB_OUTPUT
-            echo "video-name=Audrey" >> $GITHUB_OUTPUT
-            ;;
-        esac
+        MODE="${{ github.event.inputs.mode || 'single' }}"
+        echo "mode=$MODE" >> $GITHUB_OUTPUT
+        
+        if [ "$MODE" = "batch" ]; then
+          echo "🔄 Batch processing mode enabled"
+          echo "video-name=batch" >> $GITHUB_OUTPUT
+          echo "video-path=" >> $GITHUB_OUTPUT
+        else
+          echo "🎬 Single video mode"
+          case "${{ github.event.inputs.video || 'adam' }}" in
+            "adam")
+              echo "video-path=test-videos/Adam_2024-03-03_6_32_PM.mp4" >> $GITHUB_OUTPUT
+              echo "video-name=Adam" >> $GITHUB_OUTPUT
+              ;;
+            "angela")
+              echo "video-path=test-videos/Angela_2025-03-10_2_11_PM.mp4" >> $GITHUB_OUTPUT
+              echo "video-name=Angela" >> $GITHUB_OUTPUT
+              ;;
+            "audrey")
+              echo "video-path=test-videos/Audrey_2025-04-06_6_20_PM-2.mp4" >> $GITHUB_OUTPUT
+              echo "video-name=Audrey" >> $GITHUB_OUTPUT
+              ;;
+          esac
+        fi
 
     - name: Login to Amazon ECR
       id: login-ecr
@@ -280,14 +293,33 @@ jobs:
       id: task-def
       run: |
         TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-        OUTPUT_PREFIX="test-outputs/${{ steps.video-path.outputs.video-name }}-$TIMESTAMP"
+        MODE="${{ steps.video-path.outputs.mode }}"
         
-        echo "🎬 Testing video: ${{ steps.video-path.outputs.video-name }}"
-        echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
-        echo "🔑 Using secret ARN: ${{ steps.secret-arn.outputs.secret-arn }}"
+        if [ "$MODE" = "batch" ]; then
+          OUTPUT_PREFIX="batch-outputs/$TIMESTAMP"
+          echo "🔄 Batch processing mode"
+          echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
+          echo "🔑 Using secret ARN: ${{ steps.secret-arn.outputs.secret-arn }}"
+          
+          # Build command string for batch processing
+          # The batch processor will fetch videos from API, download from S3, process, and send notifications
+          CMD_STRING='mkdir -p /tmp/outputs && python src/batch_transcription_processor.py --output-dir /tmp/outputs --chunk-size 600 --max-workers 2 && aws s3 sync /tmp/outputs "s3://$S3_BUCKET/$S3_OUTPUT_PREFIX" --exclude '"'"'*.mp4'"'"' --exclude '"'"'*.mov'"'"' --exclude '"'"'*.avi'"'"' --exclude '"'"'*.mkv'"'"' --exclude '"'"'*.webm'"'"' --exclude '"'"'*.m4v'"'"' --exclude '"'"'videos/*'"'"' --exclude '"'"'chunks/*'"'"' --delete'
+        else
+          OUTPUT_PREFIX="test-outputs/${{ steps.video-path.outputs.video-name }}-$TIMESTAMP"
+          echo "🎬 Testing video: ${{ steps.video-path.outputs.video-name }}"
+          echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
+          echo "🔑 Using secret ARN: ${{ steps.secret-arn.outputs.secret-arn }}"
+          
+          # Build command string for single video processing
+          CMD_STRING='mkdir -p /tmp/video /tmp/outputs && VIDEO_FILENAME=$(basename "$S3_VIDEO_PATH") && aws s3 cp "s3://$S3_BUCKET/$S3_VIDEO_PATH" "/tmp/video/$VIDEO_FILENAME" && python src/transcription_pipeline.py --input "/tmp/video/$VIDEO_FILENAME" --output-dir /tmp/outputs --chunk-size 600 --max-workers 2 && aws s3 sync /tmp/outputs "s3://$S3_BUCKET/$S3_OUTPUT_PREFIX" --exclude '"'"'*.mp4'"'"' --exclude '"'"'*.mov'"'"' --exclude '"'"'*.avi'"'"' --exclude '"'"'*.mkv'"'"' --exclude '"'"'*.webm'"'"' --exclude '"'"'*.m4v'"'"' --exclude '"'"'videos/*'"'"' --exclude '"'"'chunks/*'"'"' --delete'
+        fi
         
-        # Build command string
-        CMD_STRING='mkdir -p /tmp/video /tmp/outputs && VIDEO_FILENAME=$(basename "$S3_VIDEO_PATH") && aws s3 cp "s3://$S3_BUCKET/$S3_VIDEO_PATH" "/tmp/video/$VIDEO_FILENAME" && python src/transcription_pipeline.py --input "/tmp/video/$VIDEO_FILENAME" --output-dir /tmp/outputs --chunk-size 600 --max-workers 2 && aws s3 sync /tmp/outputs "s3://$S3_BUCKET/$S3_OUTPUT_PREFIX" --exclude '"'"'*.mp4'"'"' --exclude '"'"'*.mov'"'"' --exclude '"'"'*.avi'"'"' --exclude '"'"'*.mkv'"'"' --exclude '"'"'*.webm'"'"' --exclude '"'"'*.m4v'"'"' --exclude '"'"'videos/*'"'"' --exclude '"'"'chunks/*'"'"' --delete'
+        # Get S3_BUCKET_PATH from secrets (for batch processing)
+        S3_BUCKET_PATH_VALUE="${{ secrets.S3_BUCKET_PATH }}"
+        if [ -z "$S3_BUCKET_PATH_VALUE" ]; then
+          # Fallback: construct from bucket name if secret not set
+          S3_BUCKET_PATH_VALUE="s3://${{ env.S3_BUCKET }}"
+        fi
         
         # Create task definition using jq for proper JSON escaping
         jq -n \
@@ -297,6 +329,7 @@ jobs:
           --arg s3_bucket "${{ env.S3_BUCKET }}" \
           --arg output_prefix "${OUTPUT_PREFIX}" \
           --arg video_path "${{ steps.video-path.outputs.video-path }}" \
+          --arg s3_bucket_path "$S3_BUCKET_PATH_VALUE" \
           --arg secret_arn "${{ steps.secret-arn.outputs.secret-arn }}" \
           --arg cmd_string "$CMD_STRING" \
           '{
@@ -325,7 +358,8 @@ jobs:
                   {"name": "AWS_DEFAULT_REGION", "value": $aws_region},
                   {"name": "S3_BUCKET", "value": $s3_bucket},
                   {"name": "S3_OUTPUT_PREFIX", "value": $output_prefix},
-                  {"name": "S3_VIDEO_PATH", "value": $video_path}
+                  {"name": "S3_VIDEO_PATH", "value": $video_path},
+                  {"name": "S3_BUCKET_PATH", "value": $s3_bucket_path}
                 ],
                 "secrets": [
                   {"name": "GOOGLE_API_KEY", "valueFrom": $secret_arn}

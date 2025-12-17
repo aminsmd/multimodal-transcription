@@ -36,7 +36,8 @@ class NotificationClient:
         self,
         video_id: str,
         status: TranscriptionStatus = TranscriptionStatus.COMPLETED,
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        output_directory: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Send a notification to the API endpoint about transcription completion.
@@ -45,6 +46,7 @@ class NotificationClient:
             video_id: The video ID to report status for
             status: Either 'Completed' or 'Error'
             error: Error message (required if status is 'Error', optional otherwise)
+            output_directory: Path to the pipeline output directory (optional)
             
         Returns:
             Dictionary with 'success' (bool), 'response' (dict), and 'error' (str, if any)
@@ -79,6 +81,10 @@ class NotificationClient:
         # Only include error field if status is Error
         if status == TranscriptionStatus.ERROR and error:
             body['error'] = error
+        
+        # Include output directory if provided
+        if output_directory:
+            body['outputDirectory'] = output_directory
         
         try:
             # Send POST request
@@ -142,29 +148,31 @@ class NotificationClient:
                 'error': f'Unexpected error: {str(e)}'
             }
     
-    def notify_success(self, video_id: str) -> Dict[str, Any]:
+    def notify_success(self, video_id: str, output_directory: Optional[str] = None) -> Dict[str, Any]:
         """
         Convenience method to notify successful transcription completion.
         
         Args:
             video_id: The video ID that was successfully transcribed
+            output_directory: Path to the pipeline output directory (optional)
             
         Returns:
             Dictionary with notification result
         """
-        return self.notify_completion(video_id, TranscriptionStatus.COMPLETED)
+        return self.notify_completion(video_id, TranscriptionStatus.COMPLETED, output_directory=output_directory)
     
-    def notify_error(self, video_id: str, error_message: str) -> Dict[str, Any]:
+    def notify_error(self, video_id: str, error_message: str, output_directory: Optional[str] = None) -> Dict[str, Any]:
         """
         Convenience method to notify transcription error.
         
         Args:
             video_id: The video ID that encountered an error
             error_message: Description of the error
+            output_directory: Path to the pipeline output directory (optional)
             
         Returns:
             Dictionary with notification result
         """
-        return self.notify_completion(video_id, TranscriptionStatus.ERROR, error_message)
+        return self.notify_completion(video_id, TranscriptionStatus.ERROR, error_message, output_directory=output_directory)
 
 
