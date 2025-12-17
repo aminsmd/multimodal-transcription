@@ -291,15 +291,27 @@ class BatchTranscriptionProcessor:
             logger.info("  2. The API call failed")
             logger.info("  3. There was an error parsing the API response")
             logger.info("Exiting gracefully with success status (no videos is not an error)")
-            # Return success even if no videos found - this is not necessarily an error
-            return {
+            
+            # Create a summary file even when no videos found
+            import json
+            from datetime import datetime
+            summary_data = {
                 'total_videos': 0,
                 'processed': 0,
                 'succeeded': 0,
                 'failed': 0,
                 'output_directory': str(self.pipeline.run_dir),
+                'timestamp': datetime.now().isoformat(),
+                'status': 'no_videos_found',
                 'results': []
             }
+            summary_file = self.pipeline.run_dir / 'batch_summary.json'
+            with open(summary_file, 'w') as f:
+                json.dump(summary_data, f, indent=2)
+            logger.info(f"Created summary file: {summary_file}")
+            
+            # Return success even if no videos found - this is not necessarily an error
+            return summary_data
         
         # Process each video
         total_videos = len(videos)
@@ -330,14 +342,25 @@ class BatchTranscriptionProcessor:
         logger.info(f"Failed: {failed}")
         logger.info(f"Output directory: {self.pipeline.run_dir}")
         
-        return {
+        # Create summary file
+        import json
+        from datetime import datetime
+        summary_data = {
             'total_videos': total_videos,
             'processed': total_videos,
             'succeeded': succeeded,
             'failed': failed,
             'output_directory': str(self.pipeline.run_dir),
+            'timestamp': datetime.now().isoformat(),
+            'status': 'completed',
             'results': self.processed_videos
         }
+        summary_file = self.pipeline.run_dir / 'batch_summary.json'
+        with open(summary_file, 'w') as f:
+            json.dump(summary_data, f, indent=2)
+        logger.info(f"Created summary file: {summary_file}")
+        
+        return summary_data
 
 
 def main():

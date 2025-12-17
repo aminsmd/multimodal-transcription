@@ -9,6 +9,7 @@ that need transcription processing.
 import requests
 from typing import List, Dict, Any, Optional
 import os
+import json
 
 
 class VideoFetcher:
@@ -41,9 +42,6 @@ class VideoFetcher:
             ...         print(video)
         """
         try:
-            # Log the endpoint being called for debugging
-            print(f"Fetching videos from: {self.endpoint_url}")
-            
             # Send GET request
             response = requests.get(
                 self.endpoint_url,
@@ -53,17 +51,24 @@ class VideoFetcher:
                 }
             )
             
-            print(f"Response status code: {response.status_code}")
-            
-            # Check if request was successful
-            response.raise_for_status()
-            
-            # Try to parse JSON response
+            # Try to parse JSON response first (even if status code indicates error)
+            # Some APIs return valid data with error status codes
             try:
                 response_data = response.json()
             except ValueError:
                 # If response is not JSON, return text
                 response_data = {'data': response.text}
+            
+            # Check if we have valid data structure even with error status
+            # If response contains 'paths' key, it's likely valid data despite status code
+            has_valid_data = (
+                isinstance(response_data, dict) and 'paths' in response_data and 
+                isinstance(response_data['paths'], list) and len(response_data['paths']) > 0
+            )
+            
+            # Only raise for status if we don't have valid data
+            if not has_valid_data:
+                response.raise_for_status()
             
             # Extract videos from response
             # Expected format: {"paths": [{"id": "...", "path": "..."}, ...]}
@@ -109,16 +114,22 @@ class VideoFetcher:
         except requests.exceptions.HTTPError as e:
             # Try to get error details from response
             error_msg = str(e)
+            error_response_body = None
             try:
-                error_response = e.response.json()
-                error_msg = error_response.get('message', error_msg)
-            except (ValueError, AttributeError):
+                if hasattr(e, 'response') and e.response is not None:
+                    error_response_body = e.response.text
+                    try:
+                        error_response = e.response.json()
+                        error_msg = error_response.get('message', error_msg)
+                    except (ValueError, AttributeError):
+                        pass
+            except Exception:
                 pass
             
             return {
                 'success': False,
                 'videos': [],
-                'response': None,
+                'response': error_response_body,
                 'status_code': e.response.status_code if hasattr(e, 'response') else None,
                 'error': f'HTTP error: {error_msg}'
             }
