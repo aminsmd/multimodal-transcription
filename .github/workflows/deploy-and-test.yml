@@ -77,6 +77,36 @@ jobs:
           esac
         fi
 
+    - name: Fetch videos from API (batch mode only)
+      id: fetch-videos
+      if: steps.video-path.outputs.mode == 'batch'
+      run: |
+        echo "🔄 Fetching videos from API..."
+        python3 scripts/fetch_videos.py > videos.json
+        
+        # Parse the JSON response
+        VIDEO_COUNT=$(jq -r '.count' videos.json)
+        echo "Found $VIDEO_COUNT videos"
+        echo "video-count=$VIDEO_COUNT" >> $GITHUB_OUTPUT
+        
+        # Save videos array for later use
+        jq -c '.videos[]' videos.json > videos_array.jsonl
+        
+        if [ "$VIDEO_COUNT" -eq 0 ]; then
+          echo "⚠️  No videos found to process"
+          echo "videos-json=[]" >> $GITHUB_OUTPUT
+        else
+          # Convert to array format for GitHub Actions
+          VIDEOS_JSON=$(jq -c '.videos' videos.json)
+          echo "videos-json<<EOF" >> $GITHUB_OUTPUT
+          echo "$VIDEOS_JSON" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        fi
+        
+        # Display first few videos
+        echo "📋 Videos to process:"
+        jq -r '.videos[0:5][] | "  - ID: \(.id), Path: \(.path)"' videos.json || echo "  (could not parse)"
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
@@ -289,37 +319,211 @@ jobs:
         echo "✅ Secret ARN ready: $SECRET_ARN"
         echo "secret-arn=$SECRET_ARN" >> $GITHUB_OUTPUT
 
-    - name: Create dynamic task definition
-      id: task-def
+    - name: Process videos (batch mode - separate tasks per video)
+      if: steps.video-path.outputs.mode == 'batch'
       run: |
         TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-        MODE="${{ steps.video-path.outputs.mode }}"
+        OUTPUT_PREFIX="batch-outputs/$TIMESTAMP"
+        echo "OUTPUT_PREFIX=$OUTPUT_PREFIX" >> $GITHUB_ENV
         
-        if [ "$MODE" = "batch" ]; then
-          OUTPUT_PREFIX="batch-outputs/$TIMESTAMP"
-          echo "🔄 Batch processing mode"
-          echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
-          echo "🔑 Using secret ARN: ${{ steps.secret-arn.outputs.secret-arn }}"
-          
-          # Build command string for batch processing
-          # The batch processor will fetch videos from API, download from S3, process, and send notifications
-          CMD_STRING='mkdir -p /tmp/outputs && echo "🚀 Starting batch transcription processor..." && python src/batch_transcription_processor.py --output-dir /tmp/outputs --chunk-size 600 --max-workers 2 && echo "📋 Checking output directory structure..." && ls -la /tmp/outputs/ && echo "📋 Listing all output files..." && find /tmp/outputs -type f | head -30 && echo "📋 Listing transcript files specifically..." && find /tmp/outputs -type f -name "*transcript*.json" -o -name "*transcript*.txt" | head -20 && echo "🔄 Syncing to S3..." && aws s3 sync /tmp/outputs "s3://$S3_BUCKET/$S3_OUTPUT_PREFIX" --exclude '"'"'*.mp4'"'"' --exclude '"'"'*.mov'"'"' --exclude '"'"'*.avi'"'"' --exclude '"'"'*.mkv'"'"' --exclude '"'"'*.webm'"'"' --exclude '"'"'*.m4v'"'"' --exclude '"'"'videos/*'"'"' --exclude '"'"'chunks/*'"'"' && echo "✅ Sync completed. Verifying S3 files..." && aws s3 ls "s3://$S3_BUCKET/$S3_OUTPUT_PREFIX/" --recursive | head -30 || echo "⚠️ No files found in S3 after sync"'
-        else
-          OUTPUT_PREFIX="test-outputs/${{ steps.video-path.outputs.video-name }}-$TIMESTAMP"
-          echo "🎬 Testing video: ${{ steps.video-path.outputs.video-name }}"
-          echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
-          echo "🔑 Using secret ARN: ${{ steps.secret-arn.outputs.secret-arn }}"
-          
-          # Build command string for single video processing
-          CMD_STRING='mkdir -p /tmp/video /tmp/outputs && VIDEO_FILENAME=$(basename "$S3_VIDEO_PATH") && aws s3 cp "s3://$S3_BUCKET/$S3_VIDEO_PATH" "/tmp/video/$VIDEO_FILENAME" && python src/transcription_pipeline.py --input "/tmp/video/$VIDEO_FILENAME" --output-dir /tmp/outputs --chunk-size 600 --max-workers 2 && aws s3 sync /tmp/outputs "s3://$S3_BUCKET/$S3_OUTPUT_PREFIX" --exclude '"'"'*.mp4'"'"' --exclude '"'"'*.mov'"'"' --exclude '"'"'*.avi'"'"' --exclude '"'"'*.mkv'"'"' --exclude '"'"'*.webm'"'"' --exclude '"'"'*.m4v'"'"' --exclude '"'"'videos/*'"'"' --exclude '"'"'chunks/*'"'"' --delete'
+        # Get S3 source bucket from secret
+        S3_SOURCE_BUCKET="${{ secrets.S3_BUCKET_PATH }}"
+        if [ -z "$S3_SOURCE_BUCKET" ]; then
+          S3_SOURCE_BUCKET="${{ env.S3_BUCKET }}"
+        fi
+        # Extract bucket name if it's a URL
+        S3_SOURCE_BUCKET=$(echo "$S3_SOURCE_BUCKET" | sed 's|.*/buckets/||' | sed 's|?.*||' | sed 's|s3://||' | sed 's|/.*||')
+        
+        S3_DEST_BUCKET="${{ env.S3_BUCKET }}"
+        SECRET_ARN="${{ steps.secret-arn.outputs.secret-arn }}"
+        IMAGE_URI="${{ steps.build-image.outputs.image-uri }}"
+        
+        echo "🔄 Batch processing mode - processing each video separately"
+        echo "📁 S3 output: s3://$S3_DEST_BUCKET/$OUTPUT_PREFIX/"
+        echo "📦 Source bucket: $S3_SOURCE_BUCKET"
+        echo "📦 Destination bucket: $S3_DEST_BUCKET"
+        
+        # Read videos from JSON
+        if [ ! -f videos.json ] || [ "$(jq -r '.count' videos.json)" -eq 0 ]; then
+          echo "⚠️  No videos to process"
+          exit 0
         fi
         
-        # Get S3_BUCKET_PATH from secrets (for batch processing - this is the SOURCE bucket for reading videos)
-        # Note: S3_BUCKET is the DESTINATION bucket for writing outputs
+        VIDEO_COUNT=$(jq -r '.count' videos.json)
+        echo "📹 Processing $VIDEO_COUNT videos as separate ECS tasks"
+        
+        # Process each video
+        SUCCEEDED=0
+        FAILED=0
+        TASK_ARNS=()
+        
+        for i in $(seq 0 $((VIDEO_COUNT - 1))); do
+          VIDEO_ID=$(jq -r ".videos[$i].id" videos.json)
+          VIDEO_PATH=$(jq -r ".videos[$i].path" videos.json)
+          
+          echo ""
+          echo "======================================================================"
+          echo "Processing video $((i + 1))/$VIDEO_COUNT: $VIDEO_ID"
+          echo "======================================================================"
+          echo "  Path: $VIDEO_PATH"
+          
+          # Create task definition for this video
+          TASK_FAMILY="multimodal-transcription-video-$(date +%s)-$i"
+          TASK_DEF_JSON=$(jq -n \
+            --arg family "$TASK_FAMILY" \
+            --arg image "$IMAGE_URI" \
+            --arg aws_region "${{ env.AWS_REGION }}" \
+            --arg s3_dest_bucket "$S3_DEST_BUCKET" \
+            --arg output_prefix "$OUTPUT_PREFIX" \
+            --arg video_id "$VIDEO_ID" \
+            --arg video_path "$VIDEO_PATH" \
+            --arg s3_source_bucket "$S3_SOURCE_BUCKET" \
+            --arg secret_arn "$SECRET_ARN" \
+            '{
+              "family": $family,
+              "networkMode": "awsvpc",
+              "requiresCompatibilities": ["FARGATE"],
+              "cpu": "2048",
+              "memory": "4096",
+              "executionRoleArn": "arn:aws:iam::669655810547:role/ecsTaskExecutionRole",
+              "taskRoleArn": "arn:aws:iam::669655810547:role/ecsTaskRole",
+              "containerDefinitions": [
+                {
+                  "name": "multimodal-transcription",
+                  "image": $image,
+                  "essential": true,
+                  "logConfiguration": {
+                    "logDriver": "awslogs",
+                    "options": {
+                      "awslogs-group": "/ecs/multimodal-transcription-test",
+                      "awslogs-region": $aws_region,
+                      "awslogs-stream-prefix": "ecs"
+                    }
+                  },
+                  "environment": [
+                    {"name": "PYTHONUNBUFFERED", "value": "1"},
+                    {"name": "AWS_DEFAULT_REGION", "value": $aws_region},
+                    {"name": "VIDEO_ID", "value": $video_id},
+                    {"name": "VIDEO_PATH", "value": $video_path},
+                    {"name": "S3_SOURCE_BUCKET", "value": $s3_source_bucket},
+                    {"name": "S3_DEST_BUCKET", "value": $s3_dest_bucket},
+                    {"name": "S3_OUTPUT_PREFIX", "value": $output_prefix},
+                    {"name": "CHUNK_SIZE", "value": "600"},
+                    {"name": "MAX_WORKERS", "value": "2"}
+                  ],
+                  "secrets": [
+                    {"name": "GOOGLE_API_KEY", "valueFrom": $secret_arn}
+                  ],
+                  "command": ["python", "src/process_single_video.py"]
+                }
+              ]
+            }')
+          
+          # Register task definition
+          TASK_DEF_ARN=$(echo "$TASK_DEF_JSON" | aws ecs register-task-definition \
+            --cli-input-json file:///dev/stdin \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          
+          echo "  ✅ Task definition registered: $TASK_DEF_ARN"
+          
+          # Run task
+          TASK_ARN=$(aws ecs run-task \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --task-definition "$TASK_DEF_ARN" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ env.SUBNET_IDS }}],securityGroups=[${{ env.SECURITY_GROUP_ID }}],assignPublicIp=ENABLED}" \
+            --query 'tasks[0].taskArn' \
+            --output text)
+          
+          echo "  🚀 Task started: $TASK_ARN"
+          TASK_ARNS+=("$TASK_ARN")
+        done
+        
+        echo ""
+        echo "======================================================================"
+        echo "Waiting for all tasks to complete..."
+        echo "======================================================================"
+        
+        # Wait for all tasks
+        for i in "${!TASK_ARNS[@]}"; do
+          TASK_ARN="${TASK_ARNS[$i]}"
+          VIDEO_ID=$(jq -r ".videos[$i].id" videos.json)
+          
+          echo ""
+          echo "⏳ Waiting for video $((i + 1))/$VIDEO_COUNT ($VIDEO_ID)..."
+          
+          # Wait for task with timeout (up to 2 hours per video)
+          MAX_WAIT=7200  # 2 hours
+          POLL_INTERVAL=30
+          ELAPSED=0
+          
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            STATUS=$(aws ecs describe-tasks \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --tasks "$TASK_ARN" \
+              --query 'tasks[0].lastStatus' \
+              --output text 2>/dev/null || echo "UNKNOWN")
+            
+            if [ "$STATUS" = "STOPPED" ]; then
+              break
+            fi
+            
+            if [ "$STATUS" = "RUNNING" ]; then
+              ELAPSED_MIN=$((ELAPSED / 60))
+              echo "    Still running... (${ELAPSED_MIN} minutes)"
+            fi
+            
+            sleep $POLL_INTERVAL
+            ELAPSED=$((ELAPSED + POLL_INTERVAL))
+          done
+          
+          # Check final status
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text 2>/dev/null || echo "UNKNOWN")
+          
+          if [ "$EXIT_CODE" = "0" ]; then
+            echo "  ✅ Video $VIDEO_ID completed successfully"
+            SUCCEEDED=$((SUCCEEDED + 1))
+          else
+            echo "  ❌ Video $VIDEO_ID failed (exit code: $EXIT_CODE)"
+            FAILED=$((FAILED + 1))
+          fi
+        done
+        
+        echo ""
+        echo "======================================================================"
+        echo "BATCH PROCESSING SUMMARY"
+        echo "======================================================================"
+        echo "Total videos: $VIDEO_COUNT"
+        echo "✅ Succeeded: $SUCCEEDED"
+        echo "❌ Failed: $FAILED"
+        echo "📁 Output: s3://$S3_DEST_BUCKET/$OUTPUT_PREFIX/"
+        
+        # Exit with error if any failed
+        if [ $FAILED -gt 0 ]; then
+          exit 1
+        fi
+
+    - name: Create dynamic task definition (single mode)
+      id: task-def
+      if: steps.video-path.outputs.mode != 'batch'
+      run: |
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        OUTPUT_PREFIX="test-outputs/${{ steps.video-path.outputs.video-name }}-$TIMESTAMP"
+        echo "🎬 Testing video: ${{ steps.video-path.outputs.video-name }}"
+        echo "📁 S3 output: s3://${{ env.S3_BUCKET }}/$OUTPUT_PREFIX/"
+        echo "🔑 Using secret ARN: ${{ steps.secret-arn.outputs.secret-arn }}"
+        
+        # Build command string for single video processing
+        CMD_STRING='mkdir -p /tmp/video /tmp/outputs && VIDEO_FILENAME=$(basename "$S3_VIDEO_PATH") && aws s3 cp "s3://$S3_BUCKET/$S3_VIDEO_PATH" "/tmp/video/$VIDEO_FILENAME" && python src/transcription_pipeline.py --input "/tmp/video/$VIDEO_FILENAME" --output-dir /tmp/outputs --chunk-size 600 --max-workers 2 && aws s3 sync /tmp/outputs "s3://$S3_BUCKET/$S3_OUTPUT_PREFIX" --exclude '"'"'*.mp4'"'"' --exclude '"'"'*.mov'"'"' --exclude '"'"'*.avi'"'"' --exclude '"'"'*.mkv'"'"' --exclude '"'"'*.webm'"'"' --exclude '"'"'*.m4v'"'"' --exclude '"'"'videos/*'"'"' --exclude '"'"'chunks/*'"'"' --delete'
+        
+        # Get S3_BUCKET_PATH from secrets
         S3_BUCKET_PATH_VALUE="${{ secrets.S3_BUCKET_PATH }}"
         if [ -z "$S3_BUCKET_PATH_VALUE" ]; then
-          # Fallback: construct from bucket name if secret not set
-          # But this should ideally be set to the source bucket (bci-prod-upload)
           S3_BUCKET_PATH_VALUE="s3://${{ env.S3_BUCKET }}"
         fi
         
@@ -387,7 +591,8 @@ jobs:
         echo "OUTPUT_PREFIX=$OUTPUT_PREFIX" >> $GITHUB_ENV
         echo "output-prefix=$OUTPUT_PREFIX" >> $GITHUB_OUTPUT
 
-    - name: Register and run ECS task
+    - name: Register and run ECS task (single mode)
+      if: steps.video-path.outputs.mode != 'batch'
       run: |
         echo "📋 Registering task definition..."
         TASK_DEF_ARN=$(aws ecs register-task-definition \
@@ -409,65 +614,11 @@ jobs:
         echo "✅ ECS task started: $TASK_ARN"
         
         # Wait for task to complete
-        # Note: aws ecs wait tasks-stopped has a default timeout of 40 attempts (20 minutes)
-        # For batch processing with multiple videos, this might take much longer
         echo "⏳ Waiting for task to complete..."
-        
-        # Check mode to determine timeout
-        MODE="${{ steps.video-path.outputs.mode }}"
-        if [ "$MODE" = "batch" ]; then
-          echo "   Batch mode: Processing may take 1-3 hours depending on number of videos"
-          echo "   Using extended timeout (up to 3 hours)"
-          # Wait with longer timeout - 360 attempts = 3 hours (30 second intervals)
-          # Use a polling loop instead of wait command for better control
-          MAX_WAIT_SECONDS=10800  # 3 hours
-          POLL_INTERVAL=30        # Check every 30 seconds
-          ELAPSED=0
-          
-          while [ $ELAPSED -lt $MAX_WAIT_SECONDS ]; do
-            CURRENT_STATUS=$(aws ecs describe-tasks \
-              --cluster ${{ env.ECS_CLUSTER }} \
-              --tasks $TASK_ARN \
-              --query 'tasks[0].lastStatus' \
-              --output text 2>/dev/null || echo "UNKNOWN")
-            
-            if [ "$CURRENT_STATUS" = "STOPPED" ]; then
-              echo "✅ Task has stopped"
-              break
-            fi
-            
-            if [ "$CURRENT_STATUS" = "RUNNING" ]; then
-              ELAPSED_MINUTES=$((ELAPSED / 60))
-              echo "   Task still running... (${ELAPSED_MINUTES} minutes elapsed)"
-            fi
-            
-            sleep $POLL_INTERVAL
-            ELAPSED=$((ELAPSED + POLL_INTERVAL))
-          done
-          
-          # Final status check
-          FINAL_STATUS=$(aws ecs describe-tasks \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --tasks $TASK_ARN \
-            --query 'tasks[0].lastStatus' \
-            --output text 2>/dev/null || echo "UNKNOWN")
-          
-          if [ "$FINAL_STATUS" != "STOPPED" ]; then
-            echo "⚠️ Wait timeout reached after ${MAX_WAIT_SECONDS} seconds"
-            echo "Current task status: $FINAL_STATUS"
-            if [ "$FINAL_STATUS" = "RUNNING" ]; then
-              echo "Task is still running. Check CloudWatch logs for progress."
-              echo "You can check task status manually with:"
-              echo "  aws ecs describe-tasks --cluster ${{ env.ECS_CLUSTER }} --tasks $TASK_ARN"
-            fi
-          fi
-        else
-          # Single video mode - use default timeout
-          echo "   Single video mode: Should complete within 20 minutes"
-          aws ecs wait tasks-stopped \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --tasks $TASK_ARN
-        fi
+        echo "   Single video mode: Should complete within 20 minutes"
+        aws ecs wait tasks-stopped \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --tasks $TASK_ARN
         
         # Get task status and details
         TASK_STATUS=$(aws ecs describe-tasks \
