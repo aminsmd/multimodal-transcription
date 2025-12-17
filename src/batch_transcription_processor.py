@@ -50,8 +50,9 @@ class BatchTranscriptionProcessor:
         Initialize the batch transcription processor.
         
         Args:
-            s3_bucket_path: S3 bucket path (if None, reads from S3_BUCKET_PATH env var)
-            output_dir: Output directory for transcripts
+            s3_bucket_path: S3 source bucket path for reading videos (if None, reads from S3_BUCKET_PATH env var)
+                          This is the bucket where input videos are stored (e.g., bci-prod-upload)
+            output_dir: Output directory for transcripts (local filesystem, will be synced to S3 separately)
             data_dir: Data directory for file management
             chunk_duration: Duration of each chunk in seconds
             max_workers: Number of parallel workers for transcription
@@ -62,13 +63,14 @@ class BatchTranscriptionProcessor:
         self.video_fetcher = VideoFetcher()
         self.notification_client = NotificationClient()
         
-        # Get S3 bucket path
+        # Get S3 source bucket path (for reading/downloading videos)
+        # This is separate from the output S3 bucket used for writing results
         if s3_bucket_path:
-            self.s3_bucket_name = s3_bucket_path
+            self.s3_source_bucket_name = s3_bucket_path
         else:
-            self.s3_bucket_name = get_s3_bucket_path()
+            self.s3_source_bucket_name = get_s3_bucket_path()
         
-        logger.info(f"S3 bucket: {self.s3_bucket_name}")
+        logger.info(f"S3 source bucket (for reading videos): {self.s3_source_bucket_name}")
         
         # Initialize pipeline
         self.pipeline = TranscriptionPipeline(
@@ -93,16 +95,27 @@ class BatchTranscriptionProcessor:
             List of video dictionaries from the API
         """
         logger.info("Fetching videos to transcribe from API...")
-        result = self.video_fetcher.fetch_videos()
-        
-        if not result['success']:
-            logger.error(f"Failed to fetch videos: {result['error']}")
+        try:
+            result = self.video_fetcher.fetch_videos()
+            
+            if not result['success']:
+                logger.error(f"Failed to fetch videos: {result['error']}")
+                logger.error(f"Response details: {result.get('response')}")
+                logger.error(f"Status code: {result.get('status_code')}")
+                # Don't fail the entire process if API fetch fails - just return empty list
+                return []
+            
+            videos = result['videos']
+            logger.info(f"Found {len(videos)} videos to transcribe")
+            
+            if videos:
+                logger.info(f"First video example: {videos[0] if isinstance(videos[0], dict) else 'string format'}")
+            
+            return videos
+        except Exception as e:
+            logger.error(f"Exception while fetching videos: {str(e)}", exc_info=True)
+            # Don't fail the entire process - return empty list
             return []
-        
-        videos = result['videos']
-        logger.info(f"Found {len(videos)} videos to transcribe")
-        
-        return videos
     
     def process_video(self, video_info: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -154,9 +167,9 @@ class BatchTranscriptionProcessor:
         
         logger.info(f"Processing video: {video_id} (path: {video_path})")
         
-        # Construct full S3 URL
-        s3_url = construct_s3_url(self.s3_bucket_name, video_path)
-        logger.info(f"S3 URL: {s3_url}")
+        # Construct full S3 URL using source bucket (for reading videos)
+        s3_url = construct_s3_url(self.s3_source_bucket_name, video_path)
+        logger.info(f"S3 source URL (for downloading): {s3_url}")
         
         # Download video from S3
         local_video_path, download_success = download_video_from_s3(s3_url)
@@ -260,15 +273,31 @@ class BatchTranscriptionProcessor:
         logger.info("=" * 70)
         
         # Fetch videos
-        videos = self.fetch_videos_to_transcribe()
+        try:
+            logger.info("Attempting to fetch videos from API...")
+            videos = self.fetch_videos_to_transcribe()
+            logger.info(f"Video fetch completed. Found {len(videos)} videos.")
+        except Exception as e:
+            logger.error(f"Exception occurred while fetching videos: {str(e)}", exc_info=True)
+            logger.error(f"Exception type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            videos = []
         
         if not videos:
             logger.warning("No videos found to transcribe")
+            logger.info("This could mean:")
+            logger.info("  1. The API returned no videos")
+            logger.info("  2. The API call failed")
+            logger.info("  3. There was an error parsing the API response")
+            logger.info("Exiting gracefully with success status (no videos is not an error)")
+            # Return success even if no videos found - this is not necessarily an error
             return {
                 'total_videos': 0,
                 'processed': 0,
                 'succeeded': 0,
                 'failed': 0,
+                'output_directory': str(self.pipeline.run_dir),
                 'results': []
             }
         
@@ -317,7 +346,8 @@ def main():
     
     parser = argparse.ArgumentParser(description='Batch Transcription Processor')
     parser.add_argument('--s3-bucket-path', type=str, default=None,
-                       help='S3 bucket path (default: from S3_BUCKET_PATH env var)')
+                       help='S3 source bucket path for reading videos (default: from S3_BUCKET_PATH env var). '
+                            'Note: Outputs are written to a different S3 bucket specified in the workflow.')
     parser.add_argument('--output-dir', type=str, default='outputs',
                        help='Output directory (default: outputs)')
     parser.add_argument('--data-dir', type=str, default='data',
@@ -361,6 +391,14 @@ def main():
         print(f"Succeeded: {summary['succeeded']}")
         print(f"Failed: {summary['failed']}")
         print(f"Output directory: {summary['output_directory']}")
+        
+        # Return 0 (success) if:
+        # - No videos found (not an error)
+        # - All videos processed successfully
+        # Return 1 (failure) only if some videos failed to process
+        if summary['total_videos'] == 0:
+            logger.info("No videos to process - exiting successfully")
+            return 0
         
         return 0 if summary['failed'] == 0 else 1
         

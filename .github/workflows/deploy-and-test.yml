@@ -314,10 +314,12 @@ jobs:
           CMD_STRING='mkdir -p /tmp/video /tmp/outputs && VIDEO_FILENAME=$(basename "$S3_VIDEO_PATH") && aws s3 cp "s3://$S3_BUCKET/$S3_VIDEO_PATH" "/tmp/video/$VIDEO_FILENAME" && python src/transcription_pipeline.py --input "/tmp/video/$VIDEO_FILENAME" --output-dir /tmp/outputs --chunk-size 600 --max-workers 2 && aws s3 sync /tmp/outputs "s3://$S3_BUCKET/$S3_OUTPUT_PREFIX" --exclude '"'"'*.mp4'"'"' --exclude '"'"'*.mov'"'"' --exclude '"'"'*.avi'"'"' --exclude '"'"'*.mkv'"'"' --exclude '"'"'*.webm'"'"' --exclude '"'"'*.m4v'"'"' --exclude '"'"'videos/*'"'"' --exclude '"'"'chunks/*'"'"' --delete'
         fi
         
-        # Get S3_BUCKET_PATH from secrets (for batch processing)
+        # Get S3_BUCKET_PATH from secrets (for batch processing - this is the SOURCE bucket for reading videos)
+        # Note: S3_BUCKET is the DESTINATION bucket for writing outputs
         S3_BUCKET_PATH_VALUE="${{ secrets.S3_BUCKET_PATH }}"
         if [ -z "$S3_BUCKET_PATH_VALUE" ]; then
           # Fallback: construct from bucket name if secret not set
+          # But this should ideally be set to the source bucket (bci-prod-upload)
           S3_BUCKET_PATH_VALUE="s3://${{ env.S3_BUCKET }}"
         fi
         

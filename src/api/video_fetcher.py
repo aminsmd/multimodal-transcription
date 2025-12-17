@@ -41,6 +41,9 @@ class VideoFetcher:
             ...         print(video)
         """
         try:
+            # Log the endpoint being called for debugging
+            print(f"Fetching videos from: {self.endpoint_url}")
+            
             # Send GET request
             response = requests.get(
                 self.endpoint_url,
@@ -49,6 +52,8 @@ class VideoFetcher:
                     'Content-Type': 'application/json'
                 }
             )
+            
+            print(f"Response status code: {response.status_code}")
             
             # Check if request was successful
             response.raise_for_status()

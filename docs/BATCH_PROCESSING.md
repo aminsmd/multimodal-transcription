@@ -83,14 +83,31 @@ print(f"Failed: {summary['failed']}")
 
 ### Required
 
-- `GOOGLE_API_KEY`: Google API key for Gemini transcription
-- `S3_BUCKET_PATH`: S3 bucket path (can be console URL, S3 URI, or bucket name)
+- `GOOGLE_API_KEY`: Google API key for Gemini transcription (stored in GitHub Secrets)
+- `S3_BUCKET_PATH`: S3 source bucket path for reading videos (stored in GitHub Secrets)
+  - This is the bucket where input videos are stored (e.g., `bci-prod-upload`)
+  - Can be in various formats: console URL, S3 URI, or bucket name
+  - The batch processor downloads videos from this bucket
 
 ### Optional
 
 - `AWS_ACCESS_KEY_ID`: AWS access key (if not using IAM role)
 - `AWS_SECRET_ACCESS_KEY`: AWS secret key (if not using IAM role)
 - `AWS_DEFAULT_REGION`: AWS region (default: us-east-1)
+
+### Note on S3 Buckets
+
+The system uses **two separate S3 buckets**:
+
+1. **Source Bucket** (`S3_BUCKET_PATH` from GitHub Secrets):
+   - Used for **reading/downloading** input videos
+   - Example: `bci-prod-upload`
+   - Set in GitHub repository secrets as `S3_BUCKET_PATH`
+
+2. **Destination Bucket** (`S3_BUCKET` in workflow):
+   - Used for **writing** transcription outputs
+   - Example: `multimodal-transcription-videos-1761690600`
+   - Defined in the workflow environment variables
 
 ## S3 Bucket Path Formats
 
