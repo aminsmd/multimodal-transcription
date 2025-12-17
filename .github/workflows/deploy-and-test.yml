@@ -350,21 +350,22 @@ jobs:
         fi
         
         VIDEO_COUNT=$(jq -r '.count' videos.json)
-        echo "📹 Processing $VIDEO_COUNT videos as separate ECS tasks"
+        echo "📹 Launching $VIDEO_COUNT videos as separate ECS tasks (async/parallel)"
         
-        # Process each video
-        SUCCEEDED=0
-        FAILED=0
+        # Step 1: Launch all tasks first (async)
+        echo ""
+        echo "======================================================================"
+        echo "STEP 1: Launching all ECS tasks..."
+        echo "======================================================================"
+        
         TASK_ARNS=()
+        VIDEO_IDS=()
         
         for i in $(seq 0 $((VIDEO_COUNT - 1))); do
           VIDEO_ID=$(jq -r ".videos[$i].id" videos.json)
           VIDEO_PATH=$(jq -r ".videos[$i].path" videos.json)
           
-          echo ""
-          echo "======================================================================"
-          echo "Processing video $((i + 1))/$VIDEO_COUNT: $VIDEO_ID"
-          echo "======================================================================"
+          echo "Launching video $((i + 1))/$VIDEO_COUNT: $VIDEO_ID"
           echo "  Path: $VIDEO_PATH"
           
           # Create task definition for this video
@@ -425,9 +426,7 @@ jobs:
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
           
-          echo "  ✅ Task definition registered: $TASK_DEF_ARN"
-          
-          # Run task
+          # Run task (async - don't wait)
           TASK_ARN=$(aws ecs run-task \
             --cluster ${{ env.ECS_CLUSTER }} \
             --task-definition "$TASK_DEF_ARN" \
@@ -436,62 +435,122 @@ jobs:
             --query 'tasks[0].taskArn' \
             --output text)
           
-          echo "  🚀 Task started: $TASK_ARN"
+          echo "  ✅ Task launched: $TASK_ARN"
           TASK_ARNS+=("$TASK_ARN")
+          VIDEO_IDS+=("$VIDEO_ID")
         done
         
         echo ""
+        echo "✅ All $VIDEO_COUNT tasks launched successfully!"
+        echo ""
         echo "======================================================================"
-        echo "Waiting for all tasks to complete..."
+        echo "STEP 2: Waiting for all tasks to complete (parallel monitoring)..."
         echo "======================================================================"
         
-        # Wait for all tasks
+        # Step 2: Wait for all tasks in parallel
+        SUCCEEDED=0
+        FAILED=0
+        COMPLETED_TASKS=0
+        MAX_WAIT=7200  # 2 hours per task
+        POLL_INTERVAL=30  # Check every 30 seconds
+        START_TIME=$(date +%s)
+        
+        # Create status tracking arrays
+        declare -a TASK_STATUSES
+        declare -a TASK_EXIT_CODES
         for i in "${!TASK_ARNS[@]}"; do
-          TASK_ARN="${TASK_ARNS[$i]}"
-          VIDEO_ID=$(jq -r ".videos[$i].id" videos.json)
+          TASK_STATUSES[$i]="RUNNING"
+          TASK_EXIT_CODES[$i]=""
+        done
+        
+        # Poll all tasks in parallel until all are complete
+        while [ $COMPLETED_TASKS -lt $VIDEO_COUNT ]; do
+          ELAPSED=$(($(date +%s) - START_TIME))
+          ELAPSED_MIN=$((ELAPSED / 60))
           
-          echo ""
-          echo "⏳ Waiting for video $((i + 1))/$VIDEO_COUNT ($VIDEO_ID)..."
-          
-          # Wait for task with timeout (up to 2 hours per video)
-          MAX_WAIT=7200  # 2 hours
-          POLL_INTERVAL=30
-          ELAPSED=0
-          
-          while [ $ELAPSED -lt $MAX_WAIT ]; do
-            STATUS=$(aws ecs describe-tasks \
-              --cluster ${{ env.ECS_CLUSTER }} \
-              --tasks "$TASK_ARN" \
-              --query 'tasks[0].lastStatus' \
-              --output text 2>/dev/null || echo "UNKNOWN")
-            
-            if [ "$STATUS" = "STOPPED" ]; then
-              break
+          # Check status of all running tasks
+          for i in "${!TASK_ARNS[@]}"; do
+            if [ "${TASK_STATUSES[$i]}" != "STOPPED" ]; then
+              TASK_ARN="${TASK_ARNS[$i]}"
+              VIDEO_ID="${VIDEO_IDS[$i]}"
+              
+              # Get current status
+              STATUS=$(aws ecs describe-tasks \
+                --cluster ${{ env.ECS_CLUSTER }} \
+                --tasks "$TASK_ARN" \
+                --query 'tasks[0].lastStatus' \
+                --output text 2>/dev/null || echo "UNKNOWN")
+              
+              if [ "$STATUS" = "STOPPED" ]; then
+                TASK_STATUSES[$i]="STOPPED"
+                
+                # Get exit code
+                EXIT_CODE=$(aws ecs describe-tasks \
+                  --cluster ${{ env.ECS_CLUSTER }} \
+                  --tasks "$TASK_ARN" \
+                  --query 'tasks[0].containers[0].exitCode' \
+                  --output text 2>/dev/null || echo "UNKNOWN")
+                
+                TASK_EXIT_CODES[$i]="$EXIT_CODE"
+                COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
+                
+                if [ "$EXIT_CODE" = "0" ]; then
+                  echo "✅ [$COMPLETED_TASKS/$VIDEO_COUNT] Video $VIDEO_ID completed successfully"
+                  SUCCEEDED=$((SUCCEEDED + 1))
+                else
+                  echo "❌ [$COMPLETED_TASKS/$VIDEO_COUNT] Video $VIDEO_ID failed (exit code: $EXIT_CODE)"
+                  FAILED=$((FAILED + 1))
+                fi
+              fi
             fi
-            
-            if [ "$STATUS" = "RUNNING" ]; then
-              ELAPSED_MIN=$((ELAPSED / 60))
-              echo "    Still running... (${ELAPSED_MIN} minutes)"
-            fi
-            
-            sleep $POLL_INTERVAL
-            ELAPSED=$((ELAPSED + POLL_INTERVAL))
           done
           
-          # Check final status
-          EXIT_CODE=$(aws ecs describe-tasks \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --tasks "$TASK_ARN" \
-            --query 'tasks[0].containers[0].exitCode' \
-            --output text 2>/dev/null || echo "UNKNOWN")
-          
-          if [ "$EXIT_CODE" = "0" ]; then
-            echo "  ✅ Video $VIDEO_ID completed successfully"
-            SUCCEEDED=$((SUCCEEDED + 1))
-          else
-            echo "  ❌ Video $VIDEO_ID failed (exit code: $EXIT_CODE)"
-            FAILED=$((FAILED + 1))
+          # Show progress if still waiting
+          if [ $COMPLETED_TASKS -lt $VIDEO_COUNT ]; then
+            REMAINING=$((VIDEO_COUNT - COMPLETED_TASKS))
+            echo "⏳ $REMAINING tasks still running... (${ELAPSED_MIN} minutes elapsed)"
           fi
+          
+          # Check for timeout
+          if [ $ELAPSED -gt $MAX_WAIT ]; then
+            echo ""
+            echo "⚠️  Timeout reached (${MAX_WAIT} seconds). Checking final status of remaining tasks..."
+            # Force check all remaining tasks
+            for i in "${!TASK_ARNS[@]}"; do
+              if [ "${TASK_STATUSES[$i]}" != "STOPPED" ]; then
+                TASK_ARN="${TASK_ARNS[$i]}"
+                VIDEO_ID="${VIDEO_IDS[$i]}"
+                STATUS=$(aws ecs describe-tasks \
+                  --cluster ${{ env.ECS_CLUSTER }} \
+                  --tasks "$TASK_ARN" \
+                  --query 'tasks[0].lastStatus' \
+                  --output text 2>/dev/null || echo "UNKNOWN")
+                
+                if [ "$STATUS" = "STOPPED" ]; then
+                  EXIT_CODE=$(aws ecs describe-tasks \
+                    --cluster ${{ env.ECS_CLUSTER }} \
+                    --tasks "$TASK_ARN" \
+                    --query 'tasks[0].containers[0].exitCode' \
+                    --output text 2>/dev/null || echo "UNKNOWN")
+                  
+                  if [ "$EXIT_CODE" = "0" ]; then
+                    echo "  ✅ Video $VIDEO_ID completed"
+                    SUCCEEDED=$((SUCCEEDED + 1))
+                  else
+                    echo "  ❌ Video $VIDEO_ID failed (exit code: $EXIT_CODE)"
+                    FAILED=$((FAILED + 1))
+                  fi
+                else
+                  echo "  ⚠️  Video $VIDEO_ID still running (status: $STATUS)"
+                  FAILED=$((FAILED + 1))
+                fi
+                COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
+              fi
+            done
+            break
+          fi
+          
+          sleep $POLL_INTERVAL
         done
         
         echo ""
