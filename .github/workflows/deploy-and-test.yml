@@ -370,7 +370,9 @@ jobs:
           
           # Create task definition for this video
           TASK_FAMILY="multimodal-transcription-video-$(date +%s)-$i"
-          TASK_DEF_JSON=$(jq -n \
+          TASK_DEF_FILE="temp-task-def-video-$i.json"
+          
+          jq -n \
             --arg family "$TASK_FAMILY" \
             --arg image "$IMAGE_URI" \
             --arg aws_region "${{ env.AWS_REGION }}" \
@@ -418,13 +420,24 @@ jobs:
                   "command": ["python", "src/process_single_video.py"]
                 }
               ]
-            }')
+            }' > "$TASK_DEF_FILE"
+          
+          # Validate JSON before registering
+          if ! jq empty "$TASK_DEF_FILE" 2>/dev/null; then
+            echo "  ❌ ERROR: Invalid JSON in task definition"
+            cat "$TASK_DEF_FILE"
+            rm -f "$TASK_DEF_FILE"
+            exit 1
+          fi
           
           # Register task definition
-          TASK_DEF_ARN=$(echo "$TASK_DEF_JSON" | aws ecs register-task-definition \
-            --cli-input-json file:///dev/stdin \
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "file://$TASK_DEF_FILE" \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
+          
+          # Clean up temp file
+          rm -f "$TASK_DEF_FILE"
           
           # Run task (async - don't wait)
           TASK_ARN=$(aws ecs run-task \
