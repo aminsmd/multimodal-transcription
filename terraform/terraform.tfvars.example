@@ -1,0 +1,41 @@
+# AWS Configuration
+aws_region  = "us-east-2"
+aws_profile = "bci"
+
+# Application Configuration
+app_name = "multimodal-transcription"
+ecr_repository_name = "multimodal-transcription"
+ecs_cluster_name = "multimodal-transcription-cluster"
+
+# Network Configuration
+vpc_id = "vpc-f2452499"
+subnet_ids = ["subnet-9b7957d7", "subnet-e74bc28c", "subnet-8135f2fc"]
+security_group_id = "sg-0b638085b666a013f"
+
+# ECS Task Configuration
+cpu    = 2048  # 2 vCPU
+memory = 4096  # 4 GB
+
+# Secrets Configuration
+google_api_key_secret_name = "google-api-key"
+
+# Schedule Configuration (cron format)
+# Examples:
+#   "cron(0 7,19 ? * MON-FRI *)"  - 7am and 7pm UTC on weekdays (Monday-Friday)
+#   "cron(0 2 * * ? *)"           - Daily at 2 AM UTC
+#   "cron(0 */6 * * ? *)"         - Every 6 hours
+#   "cron(0 0 * * ? *)"           - Daily at midnight UTC
+#   "rate(1 hour)"                - Every hour
+# Note: Times are in UTC. Adjust hours if you need a different timezone.
+schedule_expression = "cron(0 7,19 ? * MON-FRI *)"
+
+# Storage Configuration
+enable_efs = true
+
+# Tags
+tags = {
+  Project     = "multimodal-transcription"
+  Environment = "production"
+  ManagedBy   = "terraform"
+}
+
