@@ -1,0 +1,192 @@
+name: Deploy to ECS
+
+# Builds and pushes the Docker image to ECR for stage (:stage) or prod (:latest).
+# Triggers:
+#   - push to `stage` → stage (ECR :stage)
+#   - push to `main`  → prod  (ECR :latest)
+#   - manual workflow_dispatch with environment choice
+# ECS task env (S3 buckets, API URLs) lives in Terraform task definitions — not GitHub secrets.
+
+on:
+  push:
+    branches:
+      - stage
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (ignored on push; stage branch→stage, main→prod)'
+        required: true
+        default: 'stage'
+        type: choice
+        options:
+          - stage
+          - prod
+      sync_google_api_key:
+        description: 'Also sync GOOGLE_API_KEY GitHub secret to AWS Secrets Manager'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REPOSITORY: multimodal-transcription
+  ECS_CLUSTER: multimodal-transcription-cluster
+
+jobs:
+  deploy:
+    name: Deploy (${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || (github.ref_name == 'main' && 'prod' || 'stage') }})
+    runs-on: ubuntu-latest
+    # Uses GitHub Environments so secrets can be repo-level or per-environment.
+    # Create Environments named "stage" and "prod" in repo Settings → Environments.
+    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || (github.ref_name == 'main' && 'prod' || 'stage') }}
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Resolve environment config
+      id: config
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          ENV="${{ github.event.inputs.environment }}"
+        elif [ "${{ github.ref_name }}" = "main" ]; then
+          ENV=prod
+        elif [ "${{ github.ref_name }}" = "stage" ]; then
+          ENV=stage
+        else
+          echo "❌ Unsupported ref: ${{ github.ref_name }}"
+          exit 1
+        fi
+
+        case "$ENV" in
+          stage)
+            IMAGE_TAG=stage
+            TASK_FAMILY=multimodal-transcription-stage-batch
+            S3_BUCKET=bci-multimodal-transcripts-stage
+            ;;
+          prod)
+            IMAGE_TAG=latest
+            TASK_FAMILY=multimodal-transcription-batch
+            S3_BUCKET=bci-multimodal-transcripts-prod
+            ;;
+          *)
+            echo "❌ Unknown environment: $ENV"
+            exit 1
+            ;;
+        esac
+        {
+          echo "deploy-env=$ENV"
+          echo "image-tag=$IMAGE_TAG"
+          echo "task-family=$TASK_FAMILY"
+          echo "s3-bucket=$S3_BUCKET"
+        } >> "$GITHUB_OUTPUT"
+        echo "Deploying to $ENV from branch ${{ github.ref_name }} (S3 bucket: $S3_BUCKET)"
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build and push Docker image
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ steps.config.outputs.image-tag }}
+      run: |
+        set -euo pipefail
+        IMAGE_URI="$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG"
+        SHA_URI="$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+
+        echo "Building $IMAGE_URI (also tagging $SHA_URI)"
+        # Reason: Fargate tasks run linux/amd64; builders on arm hosts need an explicit platform.
+        docker build --platform linux/amd64 \
+          -t "$IMAGE_URI" \
+          -t "$SHA_URI" \
+          .
+
+        docker push "$IMAGE_URI"
+        docker push "$SHA_URI"
+
+        DIGEST=$(aws ecr describe-images \
+          --repository-name "${{ env.ECR_REPOSITORY }}" \
+          --image-ids imageTag="$IMAGE_TAG" \
+          --query 'imageDetails[0].imageDigest' \
+          --output text)
+
+        echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+        echo "image-digest=$DIGEST" >> $GITHUB_OUTPUT
+        echo "✅ Pushed $IMAGE_URI ($DIGEST)"
+
+    - name: Sync GOOGLE_API_KEY to Secrets Manager
+      if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sync_google_api_key == 'true' }}
+      run: |
+        set -euo pipefail
+        SECRET_NAME="google-api-key"
+        SECRET_VALUE="${{ secrets.GOOGLE_API_KEY }}"
+
+        if [ -z "$SECRET_VALUE" ]; then
+          echo "❌ GOOGLE_API_KEY is not set in GitHub secrets for this environment"
+          exit 1
+        fi
+
+        if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" --region "${{ env.AWS_REGION }}" &>/dev/null; then
+          aws secretsmanager put-secret-value \
+            --secret-id "$SECRET_NAME" \
+            --secret-string "$SECRET_VALUE" \
+            --region "${{ env.AWS_REGION }}" > /dev/null
+          echo "✅ Updated Secrets Manager secret: $SECRET_NAME"
+        else
+          aws secretsmanager create-secret \
+            --name "$SECRET_NAME" \
+            --secret-string "$SECRET_VALUE" \
+            --region "${{ env.AWS_REGION }}" > /dev/null
+          echo "✅ Created Secrets Manager secret: $SECRET_NAME"
+        fi
+
+    - name: Verify ECS task definition
+      run: |
+        set -euo pipefail
+        FAMILY="${{ steps.config.outputs.task-family }}"
+        if ! aws ecs describe-task-definition --task-definition "$FAMILY" &>/dev/null; then
+          echo "❌ Task definition '$FAMILY' not found."
+          echo "Apply Terraform for this environment first (see terraform/README.md)."
+          exit 1
+        fi
+        REV=$(aws ecs describe-task-definition \
+          --task-definition "$FAMILY" \
+          --query 'taskDefinition.revision' \
+          --output text)
+        IMAGE=$(aws ecs describe-task-definition \
+          --task-definition "$FAMILY" \
+          --query 'taskDefinition.containerDefinitions[0].image' \
+          --output text)
+        echo "✅ Task definition $FAMILY:$REV"
+        echo "   Container image ref: $IMAGE"
+        echo "   New ECR tag digest:  ${{ steps.build-image.outputs.image-digest }}"
+        echo ""
+        echo "Next scheduled EventBridge run (or manual run-task) will pull the updated :${{ steps.config.outputs.image-tag }} image."
+
+    - name: Deployment summary
+      run: |
+        echo "## Deploy summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Trigger | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Environment | \`${{ steps.config.outputs.deploy-env }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Cluster | \`${{ env.ECS_CLUSTER }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Task family | \`${{ steps.config.outputs.task-family }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| S3 bucket | \`${{ steps.config.outputs.s3-bucket }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Image | \`${{ steps.build-image.outputs.image-uri }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Digest | \`${{ steps.build-image.outputs.image-digest }}\` |" >> $GITHUB_STEP_SUMMARY

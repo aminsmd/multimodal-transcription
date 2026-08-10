@@ -1,5 +1,9 @@
 name: Deploy and Test
 
+# Ad-hoc ECS test runs (single/batch). For stage/prod image deploys use deploy.yml.
+# Required secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, GOOGLE_API_KEY
+# Optional: S3_BUCKET_PATH
+
 on:
   workflow_dispatch:
     inputs:

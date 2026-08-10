@@ -1,174 +1,113 @@
 # GitHub Actions for Multimodal Transcription
 
-This repository includes several GitHub Actions workflows for building, testing, and deploying the multimodal transcription pipeline.
+Workflows for deploying and testing the multimodal transcription pipeline on AWS ECS/ECR.
 
-## Workflows Overview
+## Workflows
 
-### 1. Docker Build and Test (`.github/workflows/docker-test.yml`)
-- **Triggers**: Push to main/develop, pull requests, manual dispatch
-- **Purpose**: Build and test Docker images
-- **Features**:
-  - Builds Docker image with buildx
-  - Tests image can run help command
-  - Optional batch processing test with dry run
-  - Security scanning with Trivy
-  - Caching for faster builds
+### 1. Deploy to ECS (`.github/workflows/deploy.yml`) — stage & prod
 
-### 2. Batch Processing (`.github/workflows/batch-processing.yml`)
-- **Triggers**: Manual dispatch, scheduled (daily at 2 AM UTC), push to main/develop
-- **Purpose**: Run batch video processing
-- **Features**:
-  - Builds and pushes Docker image to GitHub Container Registry
-  - Runs batch processing locally or in Docker
-  - Uploads results as artifacts
-  - Supports configurable max videos per run
+- **Triggers**:
+  - Push to `stage` → deploy **stage** (`:stage` image)
+  - Push to `main` → deploy **prod** (`:latest` image)
+  - Manual (`workflow_dispatch`) with environment choice
+- **Purpose**: Build and push the Docker image to ECR for the selected environment
+- **Image tags**:
+  - `stage` branch / env → `multimodal-transcription:stage` (ECS family `multimodal-transcription-stage-batch`)
+  - `main` branch / `prod` env → `multimodal-transcription:latest` (ECS family `multimodal-transcription-batch`)
+- Also tags the image with the commit SHA for traceability
+- Optional (manual only): sync `GOOGLE_API_KEY` into AWS Secrets Manager (`google-api-key`)
 
-### 3. ECS Deployment (`.github/workflows/ecs-deploy.yml`)
-- **Triggers**: Manual dispatch, push to main
-- **Purpose**: Deploy to AWS ECS for production batch processing
-- **Features**:
-  - Builds and pushes to Amazon ECR
-  - Deploys ECS task definition
-  - Runs batch processing as ECS task
-  - Cleans up old ECR images
+S3 buckets and API URLs are **not** GitHub secrets — they are set on the ECS task definition by Terraform (`stage.tfvars` / `terraform.tfvars`).
 
-## Required Secrets
+### 2. Deploy and Test (`.github/workflows/deploy-and-test.yml`)
 
-Configure these secrets in your GitHub repository settings:
+- **Trigger**: Manual
+- **Purpose**: Ad-hoc single-video or batch test runs (not the primary stage/prod deploy path)
+- Builds an image tagged with the commit SHA and runs an ECS Fargate task
 
-### Required for All Workflows
-- `GOOGLE_API_KEY`: Your Google API key for Gemini AI
+## Required GitHub setup
 
-### Required for ECS Deployment
-- `AWS_ACCESS_KEY_ID`: AWS access key for ECR and ECS
-- `AWS_SECRET_ACCESS_KEY`: AWS secret key for ECR and ECS
+### 1. Create Environments
+
+In **Settings → Environments**, create:
+
+| Environment | Notes |
+|-------------|--------|
+| `stage` | Optional protection rules |
+| `prod` | Recommended: required reviewers before deploy |
+
+The deploy workflow sets `environment:` to the selected input so protection rules apply.
+
+### 2. Secrets
+
+Stage and prod share one AWS account, one ECR repo, and one Secrets Manager key. Put these on **each** environment (`stage` and `prod`), **or** as repository secrets (both environments inherit repo secrets).
+
+| Secret | Required for | Description |
+|--------|----------------|-------------|
+| `AWS_ACCESS_KEY_ID` | Deploy + Deploy-and-test | IAM user/key that can push ECR, describe ECS, and (if syncing) manage Secrets Manager |
+| `AWS_SECRET_ACCESS_KEY` | Deploy + Deploy-and-test | Matching secret key |
+| `GOOGLE_API_KEY` | Deploy (only if “sync” enabled) + Deploy-and-test | Gemini API key; synced to AWS Secrets Manager as `google-api-key` |
+
+#### Optional (Deploy and Test only)
+
+| Secret | Description |
+|--------|-------------|
+| `S3_BUCKET_PATH` | Source bucket override for ad-hoc tests |
+
+#### S3 buckets (by environment)
+
+| Environment | S3 bucket |
+|-------------|-----------|
+| `stage` | `bci-multimodal-transcripts-stage` |
+| `prod` | `bci-multimodal-transcripts-prod` |
+
+These are set on the ECS task definition by Terraform (`S3_DEST_BUCKET`). They are not GitHub secrets unless you also want them for ad-hoc test workflows.
+
+Other env-specific config (not GitHub secrets):
+
+| Config | Stage | Prod |
+|--------|-------|------|
+| ECR tag | `stage` | `latest` |
+| Video fetcher / notification URLs | stage API Gateway | prod API Gateway |
+
+### IAM permissions the deploy key needs
+
+Minimum useful set:
+
+- `ecr:*` (or push/pull/auth for `multimodal-transcription`)
+- `ecs:DescribeTaskDefinition`
+- `secretsmanager:DescribeSecret`, `GetSecretValue`, `PutSecretValue`, `CreateSecret` (only if syncing the Google key)
+- `sts:GetCallerIdentity`
 
 ## Usage
 
-### Manual Batch Processing
-1. Go to Actions tab in GitHub
-2. Select "Batch Video Processing"
-3. Click "Run workflow"
-4. Configure parameters:
-   - Max videos to process
-   - Force reprocessing (if needed)
+### Deploy stage or prod
 
-### Scheduled Processing
-The workflow runs automatically every day at 2 AM UTC. To modify the schedule, edit the cron expression in `batch-processing.yml`:
+**Automatic**
+- Merge/push to `stage` → builds batch image and pushes ECR `:stage`
+- Merge/push to `main` → builds batch image and pushes ECR `:latest`
 
-```yaml
-schedule:
-  - cron: '0 2 * * *'  # Daily at 2 AM UTC
-```
+**Manual**
+1. Actions → **Deploy to ECS** → **Run workflow**
+2. Choose `stage` or `prod`
+3. Optionally enable sync of `GOOGLE_API_KEY`
+4. Confirm the job summary shows the pushed tag and digest
 
-### ECS Deployment
-1. Set up AWS credentials as secrets
-2. Update `ecs-task-definition.json` with your AWS account details
-3. Run the "ECS Batch Processing Deployment" workflow
-4. Configure ECS cluster, service, and task definition
+Next EventBridge schedule (or a manual `aws ecs run-task`) pulls the updated image. Infra/env-var changes still go through Terraform (`terraform/README.md`).
 
-## Configuration
+### Ad-hoc test run
 
-### Video Database
-The batch processor reads from `data/video_database.json`. This file should contain:
-- Video metadata (file paths, processing config)
-- Status tracking (pending, processing, completed, failed)
-- Priority ordering
-
-### Docker Configuration
-- Base image: `python:3.11-slim`
-- Includes FFmpeg for video processing
-- Runs as non-root user for security
-- Exposes port 8000 (for future web interface)
-
-### ECS Task Definition
-- CPU: 2048 (2 vCPU)
-- Memory: 4096 MB (4 GB)
-- Uses EFS for persistent storage
-- Supports both data and outputs volumes
+Use **Deploy and Test** with single/batch mode and a video selection or custom path.
 
 ## Monitoring
 
-### GitHub Actions
-- View workflow runs in the Actions tab
-- Check logs for processing details
-- Download artifacts for results
-
-### ECS (if deployed)
-- Monitor tasks in ECS console
-- Check CloudWatch logs for `/ecs/batch-transcription`
-- Set up CloudWatch alarms for failures
+- **GitHub Actions**: run logs and job summary
+- **ECS**: cluster `multimodal-transcription-cluster`
+- **CloudWatch**: `/ecs/multimodal-transcription-batch` (prod), `/ecs/multimodal-transcription-stage-batch` (stage)
 
 ## Troubleshooting
 
-### Common Issues
-
-1. **API Key Not Set**
-   - Ensure `GOOGLE_API_KEY` secret is configured
-   - Check secret name matches exactly
-
-2. **Docker Build Fails**
-   - Check Dockerfile syntax
-   - Verify all dependencies in requirements.txt
-   - Review build logs for specific errors
-
-3. **Batch Processing Fails**
-   - Verify video files exist in `data/videos/`
-   - Check database JSON format
-   - Review processing logs for API errors
-
-4. **ECS Deployment Fails**
-   - Verify AWS credentials are correct
-   - Check ECS task definition JSON
-   - Ensure EFS file systems exist
-   - Verify IAM roles have correct permissions
-
-### Debug Mode
-Enable verbose logging by adding `--verbose` to batch processor commands in the workflows.
-
-## Customization
-
-### Adding New Triggers
-Edit the `on:` section in workflow files to add new triggers:
-
-```yaml
-on:
-  push:
-    branches: [ main, develop ]
-    paths: [ 'src/**' ]  # Only trigger on source changes
-  schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours
-```
-
-### Modifying Processing Parameters
-Update the batch processor command in workflows:
-
-```yaml
-python src/batch_processor.py \
-  --database /app/data/video_database.json \
-  --base-dir /app/outputs \
-  --data-dir /app/data \
-  --max-videos 5 \
-  --chunk-duration 600 \
-  --max-workers 8 \
-  --verbose
-```
-
-### Adding Notifications
-Add notification steps to workflows:
-
-```yaml
-- name: Notify on Success
-  uses: 8398a7/action-slack@v3
-  with:
-    status: success
-    text: 'Batch processing completed successfully!'
-  if: success()
-
-- name: Notify on Failure
-  uses: 8398a7/action-slack@v3
-  with:
-    status: failure
-    text: 'Batch processing failed!'
-  if: failure()
-```
+1. **Missing AWS credentials** — Ensure `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` exist on the environment (or as repo secrets).
+2. **Task definition not found** — Apply Terraform for that workspace first (`stage` + `stage.tfvars`, or prod tfvars).
+3. **Wrong API/S3 behavior after deploy** — Image-only deploy does not change env vars; update Terraform and re-apply.
+4. **GOOGLE_API_KEY sync fails** — Set the secret on the same GitHub Environment used for the run.
