@@ -21,6 +21,8 @@ class FileStorage:
     """
     Handles file storage operations for the transcription pipeline.
     """
+
+    SUPPORTED_VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'}
     
     def __init__(self, base_dir: Path):
         """
@@ -51,7 +53,11 @@ class FileStorage:
         Returns:
             Path to the copied video
         """
-        dest_path = self.videos_dir / f"{video_id}.mp4"
+        source_ext = Path(video_path).suffix or ".mp4"
+        if source_ext.lower() not in self.SUPPORTED_VIDEO_EXTENSIONS:
+            source_ext = ".mp4"
+
+        dest_path = self.videos_dir / f"{video_id}{source_ext}"
         
         if dest_path.exists():
             print(f"Video already exists at {dest_path}")
@@ -114,8 +120,14 @@ class FileStorage:
         Returns:
             Path to the video file if it exists, None otherwise
         """
-        video_path = self.videos_dir / f"{video_id}.mp4"
-        return video_path if video_path.exists() else None
+        for video_path in self.videos_dir.iterdir():
+            if (
+                video_path.is_file()
+                and video_path.stem == video_id
+                and video_path.suffix.lower() in self.SUPPORTED_VIDEO_EXTENSIONS
+            ):
+                return video_path
+        return None
     
     def get_transcript_path(self, video_id: str, transcript_type: str = "full") -> Optional[Path]:
         """
@@ -141,7 +153,10 @@ class FileStorage:
         """
         videos = []
         
-        for video_file in self.videos_dir.glob("*.mp4"):
+        for video_file in self.videos_dir.iterdir():
+            if not video_file.is_file() or video_file.suffix.lower() not in self.SUPPORTED_VIDEO_EXTENSIONS:
+                continue
+
             video_info = {
                 "video_id": video_file.stem,
                 "filename": video_file.name,

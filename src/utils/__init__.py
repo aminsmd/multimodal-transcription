@@ -17,6 +17,10 @@ from .s3_utils import (
 
 __all__ = [
     'get_video_duration',
+    'get_video_probe',
+    'get_primary_video_stream',
+    'get_primary_audio_stream',
+    'get_ffmpeg_primary_stream_map_args',
     'validate_video_file',
     'format_timestamp',
     'parse_timestamp',
