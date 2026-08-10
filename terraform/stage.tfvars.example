@@ -1,0 +1,50 @@
+# Stage environment — copy to stage.tfvars (gitignored) then:
+#   terraform workspace select stage
+#   terraform apply -var-file=stage.tfvars
+#
+# Shares ECS cluster + ECR with prod; uses a distinct app_name so IAM roles,
+# task definition, EventBridge rule, and EFS do not collide.
+
+# AWS Configuration
+aws_region  = "us-east-2"
+aws_profile = "bci"
+
+# Application Configuration (stage-namespaced)
+app_name            = "multimodal-transcription-stage"
+ecr_repository_name = "multimodal-transcription"       # shared with prod
+ecr_image_tag       = "stage"                          # do not overwrite prod :latest
+ecs_cluster_name    = "multimodal-transcription-cluster" # shared with prod
+
+# Network Configuration (same VPC as prod)
+vpc_id            = "vpc-f2452499"
+subnet_ids        = ["subnet-9b7957d7", "subnet-e74bc28c", "subnet-8135f2fc"]
+security_group_id = "sg-0b638085b666a013f"
+
+# ECS Task Configuration
+cpu    = 2048  # 2 vCPU
+memory = 4096  # 4 GB
+
+# Secrets Configuration (shared with prod)
+google_api_key_secret_name = "google-api-key"
+
+# Schedule Configuration (cron format, UTC)
+schedule_expression = "cron(0 7,19 ? * MON-FRI *)"
+
+# Storage Configuration
+enable_efs = true
+
+# S3 Configuration (stage) — buckets must already exist
+s3_bucket_path   = "bci-stage-upload"
+s3_dest_bucket   = "bci-multimodal-transcripts-stage"
+s3_output_prefix = "transcripts"
+
+# API endpoints (stage)
+video_fetcher_url    = "https://nv6ktiaxob.execute-api.us-east-1.amazonaws.com/stage/api/v1/files/paths/toTranscribe"
+notification_api_url = "https://nv6ktiaxob.execute-api.us-east-1.amazonaws.com/stage/api/v1/pipeline/aiTranscription-Complete"
+
+# Tags
+tags = {
+  Project     = "multimodal-transcription"
+  Environment = "stage"
+  ManagedBy   = "terraform"
+}

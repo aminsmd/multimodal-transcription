@@ -31,6 +31,7 @@ This Terraform configuration creates the necessary AWS resources to run the mult
    - Update VPC, subnet, and security group IDs if needed
    - Adjust schedule expression if needed (default: 7am and 7pm UTC on weekdays)
    - Configure resource limits (CPU/memory)
+   - Optionally override S3 buckets and API endpoint URLs (defaults are production)
 
 3. **Initialize Terraform:**
    ```bash
@@ -47,6 +48,84 @@ This Terraform configuration creates the necessary AWS resources to run the mult
    ```bash
    terraform apply
    ```
+
+## Stage Environment
+
+Stage runs as a **separate ECS stack** on the same cluster and ECR repository as production. Resource names are namespaced via `app_name = "multimodal-transcription-stage"`.
+
+### Prerequisites
+
+Create (or confirm) these S3 buckets before applying stage — Terraform does not create them:
+
+- Source: `bci-stage-upload` (typically us-east-1)
+- Destination: `bci-multimodal-transcripts-stage`
+
+### Workspace isolation
+
+Use Terraform workspaces so stage and prod state stay separate (required when using local state):
+
+```bash
+cd terraform
+terraform init
+
+# One-time: move existing default state into a prod workspace (if you already applied prod)
+terraform workspace new prod
+# Or, if default already holds prod: terraform workspace select default && terraform workspace new stage
+
+terraform workspace new stage
+terraform workspace select stage
+```
+
+### Apply stage
+
+```bash
+cp stage.tfvars.example stage.tfvars
+# Edit stage.tfvars if needed
+
+terraform workspace select stage
+terraform plan -var-file=stage.tfvars
+terraform apply -var-file=stage.tfvars
+```
+
+Stage task definition family: `multimodal-transcription-stage-batch`  
+Stage EventBridge rule: `multimodal-transcription-stage-batch-schedule`  
+Shared cluster: `multimodal-transcription-cluster`  
+Stage image tag: `stage` (prod keeps `:latest` — push to `:stage` only when deploying stage)
+
+### Build and push stage image
+
+```bash
+AWS_REGION=us-east-2
+ECR_REGISTRY=669655810547.dkr.ecr.us-east-2.amazonaws.com
+REPO=multimodal-transcription
+
+aws ecr get-login-password --region "$AWS_REGION" --profile bci \
+  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+docker build --platform linux/amd64 -t "$ECR_REGISTRY/$REPO:stage" .
+docker push "$ECR_REGISTRY/$REPO:stage"
+```
+
+### Stage container env (from tfvars)
+
+| Variable | Stage value |
+|----------|-------------|
+| `S3_BUCKET_PATH` | `bci-stage-upload` |
+| `S3_DEST_BUCKET` | `bci-multimodal-transcripts-stage` |
+| `VIDEO_FETCHER_URL` | `https://nv6ktiaxob.execute-api.us-east-1.amazonaws.com/stage/api/v1/files/paths/toTranscribe` |
+| `NOTIFICATION_API_URL` | `https://nv6ktiaxob.execute-api.us-east-1.amazonaws.com/stage/api/v1/pipeline/aiTranscription-Complete` |
+
+### Manual stage task run
+
+```bash
+aws ecs run-task \
+  --cluster multimodal-transcription-cluster \
+  --task-definition multimodal-transcription-stage-batch \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-9b7957d7,subnet-e74bc28c,subnet-8135f2fc],securityGroups=[sg-0b638085b666a013f],assignPublicIp=ENABLED}" \
+  --profile bci \
+  --region us-east-2
+```
 
 ## Configuration
 
@@ -91,11 +170,9 @@ Note: If EFS is disabled, you'll need to update the task definition to use S3 fo
 The batch processor runs with the following command:
 
 ```bash
-python src/batch_processor.py \
-  --database /app/data/video_database.json \
-  --base-dir /app/outputs \
-  --data-dir /app/data \
-  --verbose
+python src/batch_transcription_processor.py \
+  --output-dir /app/outputs \
+  --data-dir /app/data
 ```
 
 ## Monitoring
@@ -132,6 +209,49 @@ aws ecs run-task \
   --network-configuration "awsvpcConfiguration={subnets=[subnet-9b7957d7,subnet-e74bc28c,subnet-8135f2fc],securityGroups=[sg-0b638085b666a013f],assignPublicIp=ENABLED}"
 ```
 
+## Updating the Google API Key Secret
+
+To update the `GOOGLE_API_KEY` secret in AWS Secrets Manager:
+
+### Using AWS CLI
+
+1. **Update the secret value:**
+   ```bash
+   aws secretsmanager update-secret \
+     --secret-id google-api-key \
+     --secret-string "YOUR_NEW_API_KEY" \
+     --profile bci \
+     --region us-east-2
+   ```
+
+2. **Verify the update:**
+   ```bash
+   aws secretsmanager get-secret-value \
+     --secret-id google-api-key \
+     --profile bci \
+     --region us-east-2 \
+     --query SecretString \
+     --output text
+   ```
+
+**Note**: If you're using a different secret name (configured in `terraform.tfvars`), replace `google-api-key` with your actual secret name.
+
+### Using AWS Console
+
+1. Navigate to **AWS Secrets Manager** in the AWS Console
+2. Find the secret named `google-api-key` (or your configured secret name)
+3. Click on the secret to open it
+4. Click **Retrieve secret value** → **Edit**
+5. Enter your new API key value
+6. Click **Save**
+
+### After Updating
+
+- The secret update takes effect immediately
+- New ECS tasks will automatically use the updated secret value
+- No Terraform changes or task definition updates are required
+- Existing running tasks will continue using the old value until they restart
+
 ## Troubleshooting
 
 ### Task Fails to Start
@@ -144,7 +264,7 @@ aws ecs run-task \
 ### Task Runs But Fails
 
 1. Check CloudWatch logs for errors
-2. Verify GOOGLE_API_KEY secret is correct
+2. Verify GOOGLE_API_KEY secret is correct (see "Updating the Google API Key Secret" above)
 3. Check EFS mount points (if enabled)
 4. Verify database file exists in data directory
 

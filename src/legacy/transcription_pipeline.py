@@ -26,6 +26,8 @@ from google.genai import types
 from dotenv import load_dotenv
 import time
 import concurrent.futures
+import boto3
+from botocore.exceptions import ClientError
 
 # Import our data models
 from models import (
@@ -93,6 +95,15 @@ class TranscriptionPipeline:
             self.file_manager = create_file_manager(data_dir, auto_organize=True)
             print(f"File management enabled: {data_dir}")
         
+        # S3 configuration for uploading results
+        self.s3_dest_bucket = os.getenv('S3_DEST_BUCKET')
+        self.s3_output_prefix = os.getenv('S3_OUTPUT_PREFIX', 'transcripts')
+        
+        if self.s3_dest_bucket:
+            print(f"S3 upload enabled: s3://{self.s3_dest_bucket}/{self.s3_output_prefix}/")
+        else:
+            print("S3 upload disabled (S3_DEST_BUCKET not set)")
+        
         # Create run metadata
         self.run_metadata = {
             "run_id": self.run_id,
@@ -100,7 +111,9 @@ class TranscriptionPipeline:
             "base_dir": str(self.base_dir),
             "pipeline_runs_dir": str(self.pipeline_runs_dir),
             "run_dir": str(self.run_dir),
-            "file_management_enabled": enable_file_management
+            "file_management_enabled": enable_file_management,
+            "s3_dest_bucket": self.s3_dest_bucket,
+            "s3_output_prefix": self.s3_output_prefix
         }
         
         print(f"Transcription pipeline run initialized: {self.run_id}")
@@ -211,6 +224,55 @@ class TranscriptionPipeline:
             json.dump(cache_data, f, indent=2)
         
         print(f"Transcript cached: {cache_file}")
+    
+    def _upload_transcript_to_s3(self, transcript_path: Path, video_id: str) -> bool:
+        """
+        Upload the full transcript JSON file to S3.
+        
+        Args:
+            transcript_path: Path to the transcript JSON file
+            video_id: Video ID for creating S3 key
+        
+        Returns:
+            True if upload successful, False otherwise
+        """
+        if not self.s3_dest_bucket:
+            return False
+        
+        if not transcript_path.exists():
+            print(f"⚠️  Transcript file does not exist: {transcript_path}")
+            return False
+        
+        try:
+            # Create S3 key: transcripts/{video_id}/{filename}
+            filename = transcript_path.name
+            s3_key = f"{video_id}.json"
+            s3_path = f"s3://{self.s3_dest_bucket}/{s3_key}"
+            
+            # Get AWS region from environment or use default
+            aws_region = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
+            s3_client = boto3.client('s3', region_name=aws_region)
+            
+            print(f"⬆️  Uploading transcript to S3: {s3_path}")
+            
+            # Upload file to S3
+            s3_client.upload_file(
+                str(transcript_path),
+                self.s3_dest_bucket,
+                s3_key
+            )
+            
+            print(f"✅ Successfully uploaded transcript to {s3_path}")
+            return True
+            
+        except ClientError as e:
+            error_msg = str(e)
+            print(f"❌ Failed to upload transcript to S3: {error_msg}")
+            return False
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ Error uploading transcript to S3: {error_msg}")
+            return False
     
     def _get_pipeline_config(self, video_input: str, chunk_duration: int, max_workers: int) -> Dict:
         """Get current pipeline configuration."""
@@ -1349,6 +1411,9 @@ Requirements
         # Save transcript to global cache
         full_transcript_path = self.run_dir / 'transcripts' / f'{video_id}_full_transcript.json'
         self._save_transcript_cache(video_id, config_hash, str(full_transcript_path), config.to_dict())
+        
+        # Upload full transcript to S3
+        self._upload_transcript_to_s3(full_transcript_path, video_id)
         
         print(f"\nTranscription pipeline completed successfully!")
         print(f"Run ID: {self.run_id}")

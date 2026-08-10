@@ -90,7 +90,7 @@ locals {
   container_definition = merge(
     {
       name  = "${var.app_name}-batch"
-      image = "${data.aws_ecr_repository.app.repository_url}:latest"
+      image = "${data.aws_ecr_repository.app.repository_url}:${var.ecr_image_tag}"
 
       environment = [
         {
@@ -100,6 +100,26 @@ locals {
         {
           name  = "AWS_DEFAULT_REGION"
           value = var.aws_region
+        },
+        {
+          name  = "S3_BUCKET_PATH"
+          value = var.s3_bucket_path
+        },
+        {
+          name  = "S3_DEST_BUCKET"
+          value = var.s3_dest_bucket
+        },
+        {
+          name  = "S3_OUTPUT_PREFIX"
+          value = var.s3_output_prefix
+        },
+        {
+          name  = "VIDEO_FETCHER_URL"
+          value = var.video_fetcher_url
+        },
+        {
+          name  = "NOTIFICATION_API_URL"
+          value = var.notification_api_url
         }
       ]
 
@@ -121,14 +141,11 @@ locals {
 
       command = [
         "python",
-        "src/batch_processor.py",
-        "--database",
-        "/app/data/video_database.json",
-        "--base-dir",
+        "src/batch_transcription_processor.py",
+        "--output-dir",
         "/app/outputs",
         "--data-dir",
-        "/app/data",
-        "--verbose"
+        "/app/data"
       ]
 
       essential = true

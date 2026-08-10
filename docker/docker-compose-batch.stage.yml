@@ -1,0 +1,17 @@
+version: '3.8'
+
+# Stage override for local batch runs.
+# Usage:
+#   docker compose -f docker/docker-compose-batch.yml -f docker/docker-compose-batch.stage.yml up --build
+#
+# Requires stage S3 buckets and credentials with access to them.
+
+services:
+  batch-transcription:
+    container_name: multimodal-transcription-batch-stage
+    environment:
+      - S3_BUCKET_PATH=bci-stage-upload
+      - S3_DEST_BUCKET=bci-multimodal-transcripts-stage
+      - S3_OUTPUT_PREFIX=transcripts
+      - VIDEO_FETCHER_URL=https://nv6ktiaxob.execute-api.us-east-1.amazonaws.com/stage/api/v1/files/paths/toTranscribe
+      - NOTIFICATION_API_URL=https://nv6ktiaxob.execute-api.us-east-1.amazonaws.com/stage/api/v1/pipeline/aiTranscription-Complete

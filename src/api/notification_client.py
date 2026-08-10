@@ -6,9 +6,17 @@ This module handles POST requests to notify external services when transcription
 is complete or has encountered an error.
 """
 
+import os
 import requests
 from typing import Optional, Dict, Any
 from enum import Enum
+import logging
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_NOTIFICATION_API_URL = (
+    "https://886hed58x9.execute-api.us-east-1.amazonaws.com/prod/pipeline/aiTranscription-Complete"
+)
 
 
 class TranscriptionStatus(str, Enum):
@@ -22,14 +30,19 @@ class NotificationClient:
     Client for sending transcription completion notifications to external API.
     """
     
-    def __init__(self, endpoint_url: str = "https://nv6ktiaxob.execute-api.us-east-1.amazonaws.com/stage/api/v1/files/aiEncoding-Complete"):
+    def __init__(self, endpoint_url: Optional[str] = None):
         """
         Initialize the notification client.
         
         Args:
-            endpoint_url: The API endpoint URL for sending notifications
+            endpoint_url: The API endpoint URL for sending notifications.
+                If None, uses NOTIFICATION_API_URL env var, then the prod default.
         """
-        self.endpoint_url = endpoint_url
+        # Reason: allow stage/prod to share one image via env without changing call sites
+        self.endpoint_url = endpoint_url or os.getenv(
+            "NOTIFICATION_API_URL",
+            DEFAULT_NOTIFICATION_API_URL,
+        )
         self.timeout = 30  # 30 second timeout for requests
     
     def notify_completion(
@@ -37,7 +50,9 @@ class NotificationClient:
         video_id: str,
         status: TranscriptionStatus = TranscriptionStatus.COMPLETED,
         error: Optional[str] = None,
-        output_directory: Optional[str] = None
+        output_directory: Optional[str] = None,
+        transcript_path: Optional[str] = None,
+        sub_dimension: Optional[str] = "DTA"
     ) -> Dict[str, Any]:
         """
         Send a notification to the API endpoint about transcription completion.
@@ -47,6 +62,7 @@ class NotificationClient:
             status: Either 'Completed' or 'Error'
             error: Error message (required if status is 'Error', optional otherwise)
             output_directory: Path to the pipeline output directory (optional)
+            transcript_path: S3 path to the uploaded transcript file (optional)
             
         Returns:
             Dictionary with 'success' (bool), 'response' (dict), and 'error' (str, if any)
@@ -75,7 +91,8 @@ class NotificationClient:
         # Prepare request body
         body = {
             'videoId': video_id,
-            'status': status.value
+            'status': status.value,
+            'sub_dimension': sub_dimension if sub_dimension else 'DTA'
         }
         
         # Only include error field if status is Error
@@ -85,6 +102,13 @@ class NotificationClient:
         # Include output directory if provided
         if output_directory:
             body['outputDirectory'] = output_directory
+        
+        # Include transcript path if provided
+        if transcript_path:
+            body['transcriptPath'] = transcript_path
+
+        print(f"Body: {body}")
+        logger.info(f"Body: {body}")
         
         try:
             # Send POST request
@@ -148,20 +172,21 @@ class NotificationClient:
                 'error': f'Unexpected error: {str(e)}'
             }
     
-    def notify_success(self, video_id: str, output_directory: Optional[str] = None) -> Dict[str, Any]:
+    def notify_success(self, video_id: str, output_directory: Optional[str] = None, transcript_path: Optional[str] = None) -> Dict[str, Any]:
         """
         Convenience method to notify successful transcription completion.
         
         Args:
             video_id: The video ID that was successfully transcribed
             output_directory: Path to the pipeline output directory (optional)
+            transcript_path: S3 path to the uploaded transcript file (optional)
             
         Returns:
             Dictionary with notification result
         """
-        return self.notify_completion(video_id, TranscriptionStatus.COMPLETED, output_directory=output_directory)
+        return self.notify_completion(video_id, TranscriptionStatus.COMPLETED, output_directory=output_directory, transcript_path=transcript_path)
     
-    def notify_error(self, video_id: str, error_message: str, output_directory: Optional[str] = None) -> Dict[str, Any]:
+    def notify_error(self, video_id: str, error_message: str, output_directory: Optional[str] = None, transcript_path: Optional[str] = None) -> Dict[str, Any]:
         """
         Convenience method to notify transcription error.
         
@@ -169,10 +194,11 @@ class NotificationClient:
             video_id: The video ID that encountered an error
             error_message: Description of the error
             output_directory: Path to the pipeline output directory (optional)
+            transcript_path: S3 path to the uploaded transcript file (optional)
             
         Returns:
             Dictionary with notification result
         """
-        return self.notify_completion(video_id, TranscriptionStatus.ERROR, error_message, output_directory=output_directory)
+        return self.notify_completion(video_id, TranscriptionStatus.ERROR, error_message, output_directory=output_directory, transcript_path=transcript_path)
 
 

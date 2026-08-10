@@ -40,6 +40,12 @@ variable "ecr_repository_name" {
   default     = "multimodal-transcription"
 }
 
+variable "ecr_image_tag" {
+  description = "ECR image tag for the ECS task (use 'stage' for stage, 'latest' for prod)"
+  type        = string
+  default     = "latest"
+}
+
 variable "ecs_cluster_name" {
   description = "Name of the ECS cluster"
   type        = string
@@ -74,6 +80,36 @@ variable "enable_efs" {
   description = "Whether to enable EFS for persistent storage"
   type        = bool
   default     = true
+}
+
+variable "s3_bucket_path" {
+  description = "S3 source bucket for reading input videos (S3_BUCKET_PATH)"
+  type        = string
+  default     = "bci-prod-upload"
+}
+
+variable "s3_dest_bucket" {
+  description = "S3 destination bucket for uploading transcription outputs (S3_DEST_BUCKET)"
+  type        = string
+  default     = "bci-multimodal-transcripts-prod"
+}
+
+variable "s3_output_prefix" {
+  description = "S3 key prefix for transcription outputs (S3_OUTPUT_PREFIX)"
+  type        = string
+  default     = "transcripts"
+}
+
+variable "video_fetcher_url" {
+  description = "API endpoint for listing videos to transcribe (VIDEO_FETCHER_URL)"
+  type        = string
+  default     = "https://886hed58x9.execute-api.us-east-1.amazonaws.com/prod/api/v1/files/paths/toTranscribe"
+}
+
+variable "notification_api_url" {
+  description = "API endpoint for transcription completion notifications (NOTIFICATION_API_URL)"
+  type        = string
+  default     = "https://886hed58x9.execute-api.us-east-1.amazonaws.com/prod/pipeline/aiTranscription-Complete"
 }
 
 variable "tags" {

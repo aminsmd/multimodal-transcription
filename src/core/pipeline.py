@@ -11,7 +11,9 @@ import json
 import datetime
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
+import boto3
+from botocore.exceptions import ClientError
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -110,6 +112,18 @@ class TranscriptionPipeline:
                 self.transcription_storage = None
                 self.enable_mongodb = False
         
+        # S3 configuration for uploading results
+        self.s3_dest_bucket = os.getenv('S3_DEST_BUCKET')
+        self.s3_output_prefix = os.getenv('S3_OUTPUT_PREFIX', 'transcripts')
+        
+        # Track the S3 path of the uploaded transcript for this run
+        self.uploaded_transcript_s3_path: Optional[str] = None
+        
+        if self.s3_dest_bucket:
+            print(f"S3 upload enabled: s3://{self.s3_dest_bucket}/{self.s3_output_prefix}/")
+        else:
+            print("S3 upload disabled (S3_DEST_BUCKET not set)")
+        
         # Create run metadata
         self.run_metadata = {
             "run_id": self.run_id,
@@ -123,7 +137,9 @@ class TranscriptionPipeline:
             "gap_threshold_seconds": gap_threshold_seconds,
             "runtime_tracking_enabled": True,
             "mongodb_enabled": self.enable_mongodb,
-            "mongodb_database": mongodb_database if self.enable_mongodb else None
+            "mongodb_database": mongodb_database if self.enable_mongodb else None,
+            "s3_dest_bucket": self.s3_dest_bucket,
+            "s3_output_prefix": self.s3_output_prefix
         }
         
         print(f"Transcription pipeline run initialized: {self.run_id}")
@@ -193,6 +209,55 @@ class TranscriptionPipeline:
         # If not found, return original input
         return video_input, Path(video_input).stem, False
     
+    def _upload_transcript_to_s3(self, transcript_path: Path, video_id: str) -> Tuple[bool, Optional[str]]:
+        """
+        Upload the full transcript JSON file to S3.
+        
+        Args:
+            transcript_path: Path to the transcript JSON file
+            video_id: Video ID for creating S3 key
+        
+        Returns:
+            Tuple of (success: bool, s3_path: Optional[str])
+            s3_path will be None if upload failed or S3_DEST_BUCKET is not set
+        """
+        if not self.s3_dest_bucket:
+            return False, None
+        
+        if not transcript_path.exists():
+            print(f"⚠️  Transcript file does not exist: {transcript_path}")
+            return False, None
+        
+        try:
+            # Create S3 key: just video_id.json (no prefix, no subdirectories)
+            s3_key = f"{video_id}.json"
+            s3_path = f"s3://{self.s3_dest_bucket}/{s3_key}"
+            
+            # Get AWS region from environment or use default
+            aws_region = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
+            s3_client = boto3.client('s3', region_name=aws_region)
+            
+            print(f"⬆️  Uploading transcript to S3: {video_id}.json -> {s3_path}")
+            
+            # Upload file to S3
+            s3_client.upload_file(
+                str(transcript_path),
+                self.s3_dest_bucket,
+                s3_key
+            )
+            
+            print(f"✅ Successfully uploaded transcript to {s3_path}")
+            return True, s3_path
+            
+        except ClientError as e:
+            error_msg = str(e)
+            print(f"❌ Failed to upload transcript to S3: {error_msg}")
+            return False, s3_path if 's3_path' in locals() else None
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ Error uploading transcript to S3: {error_msg}")
+            return False, s3_path if 's3_path' in locals() else None
+    
     def process_video(self, config: TranscriptionConfig) -> PipelineResults:
         """
         Process a video through the transcription pipeline.
@@ -203,6 +268,9 @@ class TranscriptionPipeline:
         Returns:
             PipelineResults: Pipeline results with transcript and metadata
         """
+        # Reset uploaded transcript S3 path for this video
+        self.uploaded_transcript_s3_path = None
+        
         # Start timing
         start_time = datetime.datetime.now()
         start_timestamp = start_time.isoformat()
@@ -215,6 +283,11 @@ class TranscriptionPipeline:
         
         # Resolve video input using repository or file system
         resolved_path, video_id, is_managed = self.resolve_video_input(config.video_input)
+        
+        # Override video_id if provided in config
+        if config.video_id:
+            video_id = config.video_id
+            
         print(f"\n=== Video Resolution ===")
         print(f"Resolved path: {resolved_path}")
         print(f"Video ID: {video_id}")
@@ -289,6 +362,12 @@ class TranscriptionPipeline:
                 )
                 
                 print(f"Using cached transcript: {transcript_path}")
+                
+                # Upload cached transcript to S3 if configured
+                upload_success, s3_path = self._upload_transcript_to_s3(transcript_path, video_id)
+                if upload_success and s3_path:
+                    self.uploaded_transcript_s3_path = s3_path
+                
                 return pipeline_results
         
         print(f"\n=== Processing New Transcript ===")
@@ -457,6 +536,11 @@ class TranscriptionPipeline:
         # Step 9: Save transcript to global cache
         full_transcript_path = self.run_dir / 'transcripts' / f'{video_id}_full_transcript.json'
         self.cache_manager.save_transcript_cache(video_id, config_hash, str(full_transcript_path), config.to_dict())
+        
+        # Step 9.5: Upload full transcript to S3
+        upload_success, s3_path = self._upload_transcript_to_s3(full_transcript_path, video_id)
+        if upload_success and s3_path:
+            self.uploaded_transcript_s3_path = s3_path
         
         # Clean up uploaded files from Google if requested
         if config.cleanup_uploaded_files:

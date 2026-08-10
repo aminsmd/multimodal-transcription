@@ -119,12 +119,9 @@ run_ecs_task() {
       ],
       "command": [
         "python",
-        "src/batch_processor.py",
-        "--database", "/app/data/video_database.json",
-        "--base-dir", "s3://$S3_BUCKET/$S3_OUTPUT_PREFIX",
-        "--data-dir", "s3://$S3_BUCKET/data",
-        "--max-videos", "1",
-        "--verbose"
+        "src/batch_transcription_processor.py",
+        "--output-dir", "/app/outputs",
+        "--data-dir", "/app/data"
       ]
     }
   ]

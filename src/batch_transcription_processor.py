@@ -10,8 +10,10 @@ Batch transcription processor that:
 import os
 import sys
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import logging
+import boto3
+from botocore.exceptions import ClientError
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -44,7 +46,9 @@ class BatchTranscriptionProcessor:
         chunk_duration: int = 300,
         max_workers: int = 4,
         enable_file_management: bool = True,
-        enable_validation: bool = True
+        enable_validation: bool = True,
+        s3_dest_bucket: Optional[str] = None,
+        s3_output_prefix: Optional[str] = None
     ):
         """
         Initialize the batch transcription processor.
@@ -58,6 +62,8 @@ class BatchTranscriptionProcessor:
             max_workers: Number of parallel workers for transcription
             enable_file_management: Whether to enable file management
             enable_validation: Whether to enable transcript validation
+            s3_dest_bucket: S3 destination bucket for uploading results (if None, reads from S3_DEST_BUCKET env var)
+            s3_output_prefix: S3 prefix for output files (if None, reads from S3_OUTPUT_PREFIX env var, defaults to 'transcripts')
         """
         # Initialize API clients
         self.video_fetcher = VideoFetcher()
@@ -72,9 +78,28 @@ class BatchTranscriptionProcessor:
         
         logger.info(f"S3 source bucket (for reading videos): {self.s3_source_bucket_name}")
         
+        # Get S3 destination bucket and prefix for uploading results
+        if s3_dest_bucket:
+            self.s3_dest_bucket = s3_dest_bucket
+        else:
+            self.s3_dest_bucket = os.getenv('S3_DEST_BUCKET')
+        
+        if s3_output_prefix:
+            self.s3_output_prefix = s3_output_prefix
+        else:
+            self.s3_output_prefix = os.getenv('S3_OUTPUT_PREFIX', 'transcripts')
+        
+        # Log S3 destination configuration
+        if self.s3_dest_bucket:
+            logger.info(f"S3 destination bucket (for uploading results): {self.s3_dest_bucket}")
+            logger.info(f"S3 output prefix: {self.s3_output_prefix}")
+        else:
+            logger.warning("S3_DEST_BUCKET not set - results will not be uploaded to S3")
+            logger.warning("Set S3_DEST_BUCKET environment variable to enable S3 uploads")
+        
         # Initialize pipeline
         # Disable video repository and MongoDB - we don't need database/file tracking for batch processing
-        # Results are uploaded to S3 and notifications are sent via API
+        # Results are uploaded to S3 (if S3_DEST_BUCKET is set) and notifications are sent via API
         self.pipeline = TranscriptionPipeline(
             base_dir=output_dir,
             data_dir=data_dir,
@@ -90,6 +115,152 @@ class BatchTranscriptionProcessor:
         
         # Track processing results
         self.processed_videos: List[Dict[str, Any]] = []
+    
+    def upload_results_to_s3(self, local_output_dir: Path, video_id: str) -> Tuple[bool, Optional[str]]:
+        """
+        Upload transcription results to S3 using boto3.
+        Uploads the entire transcription run directory (excluding video files and chunks/videos directories).
+        
+        Args:
+            local_output_dir: Local directory containing the results (pipeline run directory)
+            video_id: Video ID for creating a unique S3 prefix
+        
+        Returns:
+            Tuple of (success: bool, s3_path: Optional[str])
+            s3_path will be None if upload failed or S3_DEST_BUCKET is not set
+        """
+        if not self.s3_dest_bucket:
+            logger.warning("S3_DEST_BUCKET not set - skipping S3 upload")
+            return False, None
+        
+        try:
+            # Create S3 path with video-specific prefix
+            s3_path = f"s3://{self.s3_dest_bucket}/{self.s3_output_prefix}/{video_id}/"
+            s3_prefix = f"{self.s3_output_prefix}/{video_id}/"
+            
+            logger.info(f"Uploading results to {s3_path}")
+            print(f"   ⬆️  Uploading to S3: {s3_path}")
+            
+            # Get AWS region from environment or use default
+            aws_region = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
+            s3_client = boto3.client('s3', region_name=aws_region)
+            
+            # Define excluded patterns (file extensions and directory patterns)
+            excluded_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'}
+            excluded_dirs = {'videos', 'chunks'}
+            
+            # Verify directory exists
+            if not local_output_dir.exists():
+                error_msg = f"Output directory does not exist: {local_output_dir}"
+                logger.error(error_msg)
+                print(f"   ❌ {error_msg}")
+                return False, None
+            
+            logger.info(f"Scanning directory for upload: {local_output_dir}")
+            print(f"   📂 Scanning: {local_output_dir}")
+            
+            # Track upload statistics
+            uploaded_count = 0
+            skipped_count = 0
+            failed_count = 0
+            total_files_found = 0
+            
+            # Walk through directory and upload files
+            local_output_dir_str = str(local_output_dir)
+            for root, dirs, files in os.walk(local_output_dir):
+                # Filter out excluded directories from dirs list to prevent walking into them
+                dirs[:] = [d for d in dirs if d not in excluded_dirs]
+                
+                # Skip excluded directories in current path
+                rel_root = os.path.relpath(root, local_output_dir_str)
+                path_parts = Path(rel_root).parts
+                if any(excluded_dir in path_parts for excluded_dir in excluded_dirs):
+                    logger.debug(f"Skipping excluded directory: {rel_root}")
+                    continue
+                
+                total_files_found += len(files)
+                logger.debug(f"Processing directory: {rel_root} ({len(files)} files)")
+                
+                for file in files:
+                    file_path = Path(root) / file
+                    rel_path = file_path.relative_to(local_output_dir)
+                    
+                    # Skip excluded file extensions (video files)
+                    if file_path.suffix.lower() in excluded_extensions:
+                        skipped_count += 1
+                        logger.debug(f"Skipping excluded extension: {rel_path} (extension: {file_path.suffix})")
+                        continue
+                    
+                    # Construct S3 key preserving directory structure
+                    s3_key = f"{video_id}.json"
+                    
+                    try:
+                        # Upload file to S3
+                        logger.info(f"Uploading: {video_id}.json -> s3://{self.s3_dest_bucket}/{s3_key}")
+                        s3_client.upload_file(
+                            str(file_path),
+                            self.s3_dest_bucket,
+                            s3_key
+                        )
+                        uploaded_count += 1
+                        logger.info(f"✅ Uploaded: {rel_path} -> s3://{self.s3_dest_bucket}/{s3_key}")
+                        print(f"   ✅ Uploaded: {rel_path}")
+                    except ClientError as e:
+                        failed_count += 1
+                        error_msg = str(e)
+                        logger.warning(f"Failed to upload {rel_path}: {error_msg}")
+                        print(f"   ❌ Failed: {rel_path} - {error_msg[:100]}")
+                    except Exception as e:
+                        failed_count += 1
+                        error_msg = str(e)
+                        logger.warning(f"Unexpected error uploading {rel_path}: {error_msg}")
+                        print(f"   ❌ Error: {rel_path} - {error_msg[:100]}")
+            
+            # Log detailed summary
+            logger.info(f"Upload scan complete: {total_files_found} total files found, {uploaded_count} uploaded, {skipped_count} skipped, {failed_count} failed")
+            
+            # Log summary
+            print(f"   📊 Upload summary: {uploaded_count} uploaded, {skipped_count} skipped, {failed_count} failed")
+            if total_files_found == 0:
+                logger.warning(f"No files found in directory: {local_output_dir}")
+                print(f"   ⚠️  No files found in output directory")
+                # List directory contents for debugging
+                try:
+                    dir_contents = list(local_output_dir.iterdir())
+                    logger.info(f"Directory contents: {[str(p) for p in dir_contents]}")
+                    print(f"   📂 Directory contents: {len(dir_contents)} items")
+                    for item in dir_contents[:10]:  # Show first 10 items
+                        item_type = "DIR" if item.is_dir() else "FILE"
+                        print(f"      {item_type}: {item.name}")
+                except Exception as e:
+                    logger.warning(f"Could not list directory contents: {e}")
+            elif skipped_count > 0:
+                print(f"   ⏭️  Skipped: {skipped_count} files (excluded patterns)")
+            if failed_count > 0:
+                print(f"   ⚠️  Failed: {failed_count} files")
+            
+            # Consider upload successful if at least some files were uploaded
+            if uploaded_count > 0:
+                logger.info(f"✅ Successfully uploaded results to {s3_path}")
+                return True, s3_path
+            else:
+                if total_files_found == 0:
+                    error_msg = f"No files found in output directory: {local_output_dir}"
+                elif skipped_count == total_files_found:
+                    error_msg = f"All {total_files_found} files were excluded by filters"
+                elif failed_count > 0:
+                    error_msg = f"All {total_files_found} files failed to upload"
+                else:
+                    error_msg = "No files were uploaded (unknown reason)"
+                logger.warning(f"S3 upload had issues: {error_msg}")
+                print(f"   ⚠️  Upload warning: {error_msg}")
+                return False, s3_path  # Return path even on failure so notification can use it
+                
+        except Exception as e:
+            error_msg = f"Exception during S3 upload: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            print(f"   ❌ Upload failed: {str(e)}")
+            return False, None
     
     def fetch_videos_to_transcribe(self) -> List[Dict[str, Any]]:
         """
@@ -215,11 +386,14 @@ class BatchTranscriptionProcessor:
             logger.error(error_msg)
             print(f"   ❌ DOWNLOAD FAILED: {error_msg}")
             
+            # Use local output directory for error notification (no upload attempted)
+            output_directory = str(self.pipeline.run_dir) if hasattr(self, 'pipeline') else 'N/A'
+            
             # Send error notification
             notification_result = self.notification_client.notify_error(
                 video_id,
                 error_msg,
-                output_directory=str(self.pipeline.run_dir)
+                output_directory=output_directory
             )
             logger.info(f"Notification sent: {notification_result}")
             print(f"   📤 Notification sent: {'✅' if notification_result['success'] else '❌'}")
@@ -229,6 +403,7 @@ class BatchTranscriptionProcessor:
                 'video_id': video_id,
                 'error': error_msg,
                 'download_status': 'failed',
+                'upload_status': 'skipped',
                 'notification_sent': notification_result['success']
             }
         
@@ -249,6 +424,7 @@ class BatchTranscriptionProcessor:
             
             config = TranscriptionConfig(
                 video_input=local_video_path,
+                video_id=video_id,
                 chunk_duration=self.chunk_duration,
                 max_workers=self.max_workers,
                 cleanup_uploaded_files=True,
@@ -263,10 +439,28 @@ class BatchTranscriptionProcessor:
             print(f"   ✅ TRANSCRIPTION SUCCESS: {len(results.full_transcript.transcript)} entries")
             print(f"   📁 Output: {self.pipeline.run_dir}")
             
+            # Upload results to S3
+            # upload_success, s3_output_path = self.upload_results_to_s3(
+            #     self.pipeline.run_dir,
+            #     video_id
+            # )
+            
+            # Get S3 paths from pipeline (pipeline is what actually uploads the transcript)
+            # Use pipeline's S3 configuration for output directory
+            pipeline_s3_bucket = self.pipeline.s3_dest_bucket if hasattr(self.pipeline, 's3_dest_bucket') else self.s3_dest_bucket
+            pipeline_s3_prefix = self.pipeline.s3_output_prefix if hasattr(self.pipeline, 's3_output_prefix') else self.s3_output_prefix
+            
+            # Use S3 path for notification if upload succeeded, otherwise use local path
+            output_directory = f"s3://{pipeline_s3_bucket}/{video_id}.json" if pipeline_s3_bucket else None
+            
+            # Get the actual uploaded transcript S3 path from the pipeline
+            transcript_path = getattr(self.pipeline, 'uploaded_transcript_s3_path', None)
+            
             # Send success notification
             notification_result = self.notification_client.notify_success(
                 video_id,
-                output_directory=str(self.pipeline.run_dir)
+                output_directory=output_directory,
+                transcript_path=transcript_path
             )
             logger.info(f"Notification sent: {notification_result}")
             print(f"   📤 Notification sent: {'✅' if notification_result['success'] else '❌'}")
@@ -283,7 +477,10 @@ class BatchTranscriptionProcessor:
                 'success': True,
                 'video_id': video_id,
                 'transcript_entries': len(results.full_transcript.transcript),
-                'output_directory': str(self.pipeline.run_dir),
+                'output_directory': output_directory,
+                'local_output_directory': str(self.pipeline.run_dir),
+                's3_output_directory': output_directory,
+                'upload_status': 'success',
                 'download_status': 'success',
                 'notification_sent': notification_result['success'],
                 'notification_response': notification_result.get('response')
@@ -293,11 +490,34 @@ class BatchTranscriptionProcessor:
             error_msg = f"Error processing video {video_id}: {str(e)}"
             logger.error(error_msg, exc_info=True)
             
+            # Try to upload any partial results if available
+            if hasattr(self, 'pipeline') and self.pipeline.run_dir.exists():
+                try:
+                    print(f"   ⬆️  Where I would be Uploading partial results to S3...")
+                    # upload_success, s3_output_path = self.upload_results_to_s3(
+                    #     self.pipeline.run_dir,
+                    #     video_id
+                    # )
+                except Exception as upload_error:
+                    logger.warning(f"Failed to upload partial results: {upload_error}")
+            
+            # Get S3 paths from pipeline (pipeline is what actually uploads the transcript)
+            # Use pipeline's S3 configuration for output directory
+            pipeline_s3_bucket = self.pipeline.s3_dest_bucket if hasattr(self.pipeline, 's3_dest_bucket') else self.s3_dest_bucket
+            pipeline_s3_prefix = self.pipeline.s3_output_prefix if hasattr(self.pipeline, 's3_output_prefix') else self.s3_output_prefix
+            
+            # Use S3 path if available, otherwise local path
+            output_directory = f"s3://{pipeline_s3_bucket}/{pipeline_s3_prefix}/{video_id}" if pipeline_s3_bucket else None
+            
+            # Get the actual uploaded transcript S3 path from the pipeline (may be None if upload failed)
+            transcript_path = getattr(self.pipeline, 'uploaded_transcript_s3_path', None)
+            
             # Send error notification
             notification_result = self.notification_client.notify_error(
                 video_id,
                 error_msg,
-                output_directory=str(self.pipeline.run_dir)
+                output_directory=output_directory,
+                transcript_path=transcript_path
             )
             logger.info(f"Notification sent: {notification_result}")
             
@@ -313,6 +533,8 @@ class BatchTranscriptionProcessor:
                 'video_id': video_id,
                 'error': error_msg,
                 'download_status': 'success' if 'local_video_path' in locals() else 'failed',
+                'upload_status': 'success',
+                's3_output_directory': output_directory,
                 'notification_sent': notification_result['success']
             }
     
@@ -430,6 +652,17 @@ class BatchTranscriptionProcessor:
             print(f"   ✅ Successful downloads: {download_successes}")
             print(f"   ❌ Failed downloads: {download_failures}")
         
+        # Show upload status summary
+        # upload_successes = sum(1 for r in self.processed_videos if r.get('upload_status') == 'success')
+        # upload_failures = sum(1 for r in self.processed_videos if r.get('upload_status') == 'failed')
+        # upload_skipped = sum(1 for r in self.processed_videos if r.get('upload_status') == 'skipped')
+        # if upload_successes + upload_failures + upload_skipped > 0:
+        #     print(f"\n⬆️  UPLOAD STATUS:")
+        #     print(f"   ✅ Successful: {upload_successes}")
+        #     print(f"   ❌ Failed: {upload_failures}")
+        #     if upload_skipped > 0:
+        #         print(f"   ⏭️  Skipped: {upload_skipped}")
+        
         # Show notification status summary
         notifications_sent = sum(1 for r in self.processed_videos if r.get('notification_sent'))
         notifications_failed = sum(1 for r in self.processed_videos if not r.get('notification_sent', True))
@@ -466,7 +699,11 @@ def main():
     parser = argparse.ArgumentParser(description='Batch Transcription Processor')
     parser.add_argument('--s3-bucket-path', type=str, default=None,
                        help='S3 source bucket path for reading videos (default: from S3_BUCKET_PATH env var). '
-                            'Note: Outputs are written to a different S3 bucket specified in the workflow.')
+                            'Note: Outputs are written to a different S3 bucket specified via --s3-dest-bucket.')
+    parser.add_argument('--s3-dest-bucket', type=str, default=None,
+                       help='S3 destination bucket for uploading results (default: from S3_DEST_BUCKET env var)')
+    parser.add_argument('--s3-output-prefix', type=str, default=None,
+                       help='S3 prefix for output files (default: from S3_OUTPUT_PREFIX env var, or "transcripts")')
     parser.add_argument('--output-dir', type=str, default='outputs',
                        help='Output directory (default: outputs)')
     parser.add_argument('--data-dir', type=str, default='data',
@@ -496,7 +733,9 @@ def main():
             chunk_duration=args.chunk_size,
             max_workers=args.max_workers,
             enable_file_management=not args.no_file_management,
-            enable_validation=not args.no_validation
+            enable_validation=not args.no_validation,
+            s3_dest_bucket=args.s3_dest_bucket,
+            s3_output_prefix=args.s3_output_prefix
         )
         
         # Process all videos

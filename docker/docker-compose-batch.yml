@@ -1,5 +1,8 @@
 version: '3.8'
 
+# Prod defaults. For stage locally, also pass the stage override file:
+#   docker compose -f docker/docker-compose-batch.yml -f docker/docker-compose-batch.stage.yml up --build
+
 services:
   batch-transcription:
     build: .
@@ -7,6 +10,11 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - PYTHONUNBUFFERED=1
+      - S3_BUCKET_PATH=bci-prod-upload
+      # Optional prod API overrides (defaults in code match prod if unset):
+      # - VIDEO_FETCHER_URL=https://886hed58x9.execute-api.us-east-1.amazonaws.com/prod/api/v1/files/paths/toTranscribe
+      # - NOTIFICATION_API_URL=https://886hed58x9.execute-api.us-east-1.amazonaws.com/prod/pipeline/aiTranscription-Complete
+      # - S3_DEST_BUCKET=bci-multimodal-transcripts-prod
     volumes:
       # Mount data directory for videos and database
       - ./data:/app/data
@@ -16,11 +24,9 @@ services:
       - ./logs:/app/logs
     working_dir: /app
     command: >
-      python src/batch_processor.py
-      --database /app/data/video_database.json
-      --base-dir /app/outputs
+      python src/batch_transcription_processor.py
+      --output-dir /app/outputs
       --data-dir /app/data
-      --verbose
     restart: "no"  # Don't restart automatically - let ECS handle it
     # Resource limits
     deploy:

@@ -70,14 +70,10 @@ check_api_key() {
     print_success "Google API key is set"
 }
 
-# Function to check if database exists
+# Function to check if database exists (deprecated - batch_transcription_processor uses API)
 check_database() {
-    if [ ! -f "data/video_database.json" ]; then
-        print_error "Video database not found: data/video_database.json"
-        print_info "Please create the database file first"
-        exit 1
-    fi
-    print_success "Video database found"
+    # batch_transcription_processor.py fetches videos from API, so database is not required
+    print_info "Skipping database check - using API for video fetching"
 }
 
 # Function to build Docker image
@@ -101,7 +97,7 @@ build_image() {
 
 # Function to run batch processing
 run_batch() {
-    local max_videos=$1I
+    local max_videos=$1
     local no_file_management=$2
     local no_validation=$3
     local verbose=$4
@@ -115,14 +111,9 @@ run_batch() {
     if [ "$interactive" = true ]; then
         cmd="$cmd batch-transcription bash"
     else
-        cmd="$cmd batch-transcription python src/batch_processor.py"
-        cmd="$cmd --database /app/data/video_database.json"
-        cmd="$cmd --base-dir /app/outputs"
+        cmd="$cmd batch-transcription python src/batch_transcription_processor.py"
+        cmd="$cmd --output-dir /app/outputs"
         cmd="$cmd --data-dir /app/data"
-        
-        if [ -n "$max_videos" ]; then
-            cmd="$cmd --max-videos $max_videos"
-        fi
         
         if [ "$no_file_management" = true ]; then
             cmd="$cmd --no-file-management"
@@ -130,10 +121,6 @@ run_batch() {
         
         if [ "$no_validation" = true ]; then
             cmd="$cmd --no-validation"
-        fi
-        
-        if [ "$verbose" = true ]; then
-            cmd="$cmd --verbose"
         fi
     fi
     
@@ -250,9 +237,6 @@ fi
 # Check prerequisites
 check_api_key
 check_database
-
-# Show database status
-show_database_status
 
 # Build image if requested or if it doesn't exist
 if [ "$BUILD" = true ] || ! docker images | grep -q "$IMAGE_NAME"; then

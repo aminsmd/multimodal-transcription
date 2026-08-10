@@ -12,19 +12,29 @@ import os
 import json
 
 
+DEFAULT_VIDEO_FETCHER_URL = (
+    "https://886hed58x9.execute-api.us-east-1.amazonaws.com/prod/api/v1/files/paths/toTranscribe"
+)
+
+
 class VideoFetcher:
     """
     Client for fetching videos that need transcription from the API.
     """
     
-    def __init__(self, endpoint_url: str = "https://886hed58x9.execute-api.us-east-1.amazonaws.com/prod/api/v1/files/paths/toTranscribe"):
+    def __init__(self, endpoint_url: Optional[str] = None):
         """
         Initialize the video fetcher.
         
         Args:
-            endpoint_url: The API endpoint URL for fetching videos
+            endpoint_url: The API endpoint URL for fetching videos.
+                If None, uses VIDEO_FETCHER_URL env var, then the prod default.
         """
-        self.endpoint_url = endpoint_url
+        # Reason: allow stage/prod to share one image via env without changing call sites
+        self.endpoint_url = endpoint_url or os.getenv(
+            "VIDEO_FETCHER_URL",
+            DEFAULT_VIDEO_FETCHER_URL,
+        )
         self.timeout = 30  # 30 second timeout for requests
     
     def fetch_videos(self) -> Dict[str, Any]:

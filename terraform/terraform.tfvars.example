@@ -5,6 +5,7 @@ aws_profile = "bci"
 # Application Configuration
 app_name = "multimodal-transcription"
 ecr_repository_name = "multimodal-transcription"
+ecr_image_tag       = "latest"
 ecs_cluster_name = "multimodal-transcription-cluster"
 
 # Network Configuration
@@ -31,6 +32,15 @@ schedule_expression = "cron(0 7,19 ? * MON-FRI *)"
 
 # Storage Configuration
 enable_efs = true
+
+# S3 Configuration (prod defaults)
+s3_bucket_path   = "bci-prod-upload"
+s3_dest_bucket   = "bci-multimodal-transcripts-prod"
+s3_output_prefix = "transcripts"
+
+# API endpoints (prod)
+video_fetcher_url    = "https://886hed58x9.execute-api.us-east-1.amazonaws.com/prod/api/v1/files/paths/toTranscribe"
+notification_api_url = "https://886hed58x9.execute-api.us-east-1.amazonaws.com/prod/pipeline/aiTranscription-Complete"
 
 # Tags
 tags = {
